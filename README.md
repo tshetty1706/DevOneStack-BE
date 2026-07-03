@@ -26,31 +26,36 @@ A secure Express + MongoDB REST API providing **JWT-based authentication** with 
 ```
 Backend/
 ├── config/
-│   ├── db.js              # MongoDB Atlas connection (connectDB)
-│   └── passport.js        # Google + GitHub Passport strategies
-├── middleware/
-│   └── requireAuth.js     # JWT cookie guard for protected routes
-├── models/
-│   └── User.js            # Mongoose user schema
-├── routes/
-│   └── auth.js            # All 8 auth endpoints
-├── utils/
-│   └── tokens.js          # JWT sign helpers + cookieOptions
-├── .env                   # Secrets — DO NOT commit (in .gitignore)
-├── .env.example           # Template — safe to commit
+│   ├── db.js                 # MongoDB Atlas connection (connectDB)
+│   └── passport.js           # Google + GitHub Passport strategies
+├── controllers/              # Controller logic separating route handlers
+│   ├── auth.controller.js
+│   ├── boilerplate.controller.js
+│   └── inbox.controller.js
+├── middleware/               # Custom middleware
+│   ├── protectRoute.js       # JWT token guard (replaces requireAuth)
+│   ├── rateLimiter.js        # API rate limiters (login, signup, forgot password)
+│   └── requireAuth.js        # Deprecated JWT guard (kept for compatibility)
+├── models/                   # MongoDB (Mongoose) schemas
+│   ├── Boilerplate.js        # User boilerplate files schema
+│   ├── InboxItem.js          # User inbox items schema
+│   ├── Space.js              # User tool/work space schema
+│   └── User.js               # User accounts schema
+├── routes/                   # Express routing tables
+│   ├── auth.routes.js        # Authentication endpoints (Google, GitHub, manual)
+│   ├── boilerplate.routes.js # Boilerplate CRUD endpoints
+│   ├── inbox.routes.js       # Inbox Items CRUD endpoints
+│   └── auth.js               # Deprecated authentication routes (kept for compatibility)
+├── utils/                    # Utility helpers
+│   ├── email.js              # Email transporter (verification/reset emails via Nodemailer)
+│   ├── jwt.js                # JWT sign utilities
+│   └── tokens.js             # Token helpers
+├── .env                      # Secrets — DO NOT commit (in .gitignore)
+├── .env.example              # Template — safe to commit
 ├── .gitignore
 ├── package.json
-└── server.js              # Express app entry point
+└── server.js                 # Express app entry point
 ```
-
----
-
-## Prerequisites
-
-- **Node.js** v18 or above
-- **MongoDB Atlas** account with a cluster and a database user
-- **Google Cloud Console** project with OAuth 2.0 credentials
-- **GitHub Developer Settings** OAuth App
 
 ---
 
@@ -119,26 +124,47 @@ Server runs on `http://localhost:9000`.
 
 ## API Endpoints
 
-All routes are prefixed with `/api/auth`.
+### Authentication `/api/auth`
 
-### OAuth
+#### OAuth
 
-| Method | Endpoint                  | Description                                     |
-| ------ | ------------------------- | ----------------------------------------------- |
-| GET    | `/google`                 | Redirect to Google consent screen               |
-| GET    | `/google/callback`        | Google callback → issue tokens → redirect to app |
-| GET    | `/github`                 | Redirect to GitHub consent screen               |
-| GET    | `/github/callback`        | GitHub callback → issue tokens → redirect to app |
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| **GET** | `/google` | Redirect to Google consent screen |
+| **GET** | `/google/callback` | Google callback → issue tokens → redirect to frontend app |
+| **GET** | `/github` | Redirect to GitHub consent screen |
+| **GET** | `/github/callback` | GitHub callback → issue tokens → redirect to frontend app |
 
-### Manual Auth
+#### Local / Manual Auth
 
-| Method | Endpoint    | Body                         | Description                          |
-| ------ | ----------- | ---------------------------- | ------------------------------------ |
-| POST   | `/signup`   | `{ name, email, password }`  | Create account, issue tokens         |
-| POST   | `/login`    | `{ email, password }`        | Verify credentials, issue tokens     |
-| POST   | `/refresh`  | —                            | Rotate access token via refresh cookie |
-| POST   | `/logout`   | —                            | Invalidate refresh token, clear cookies |
-| GET    | `/me`       | —                            | Return current user from access token |
+| Method | Endpoint | Body | Description |
+| :--- | :--- | :--- | :--- |
+| **POST** | `/signup` | `{ name, email, password }` | Sign up user, issue tokens, send verification email (Rate Limited) |
+| **POST** | `/login` | `{ email, password }` | Verify credentials, issue tokens (Rate Limited) |
+| **POST** | `/logout` | — | Invalidate refresh token, clear cookies |
+| **GET** | `/verify-email/:token` | — | Verify email using a verification token |
+| **POST** | `/forgot-password` | `{ email }` | Send reset password link via email (Rate Limited) |
+| **POST** | `/reset-password/:token`| `{ password }` | Reset password using a reset token |
+| **POST** | `/refresh` | — | Rotate access token via refresh cookie |
+| **GET** | `/me` | — | Get current user's profile info (Requires `protectRoute`) |
+
+### Inbox Items `/api/inbox` (Requires `protectRoute`)
+
+| Method | Endpoint | Body | Description |
+| :--- | :--- | :--- | :--- |
+| **GET** | `/` | — | Retrieve all inbox items for the current user |
+| **POST** | `/` | `{ title, ... }` | Create a new inbox item |
+| **PUT** | `/:id` | `{ title, completed, ... }`| Update an inbox item by ID |
+| **DELETE**| `/:id` | — | Delete an inbox item by ID |
+
+### Boilerplates `/api/boilerplates` (Requires `protectRoute`)
+
+| Method | Endpoint | Body | Description |
+| :--- | :--- | :--- | :--- |
+| **GET** | `/` | — | Retrieve all boilerplates for the current user |
+| **POST** | `/` | `{ name, ... }` | Create a new boilerplate |
+| **PUT** | `/:id` | `{ name, pinned, ... }`| Update a boilerplate by ID |
+| **DELETE**| `/:id` | — | Delete a boilerplate by ID |
 
 ---
 
@@ -154,7 +180,7 @@ Email/Password:
 OAuth (Google / GitHub):
   GET /google → redirect to provider
     → Passport verifies → find or create User in MongoDB
-    → issue cookies → redirect to CLIENT_URL/dashboard
+    → issue cookies → redirect to CLIENT_URL/oauth/callback#token=...
 
 Token Refresh:
   POST /refresh
@@ -172,7 +198,7 @@ Logout:
 
 ## Security
 
-- ✅ All tokens in **httpOnly cookies** — inaccessible to JavaScript
+- ✅ All tokens in **httpOnly cookies** — inaccessible to JavaScript (except access tokens which can be passed via URL hash for client-side routing on initial redirect, then immediately cleared)
 - ✅ `secure: true` + `sameSite: "none"` in production (HTTPS only)
 - ✅ bcrypt **saltRounds: 12**
 - ✅ Same `"Invalid credentials"` message for wrong email or password (no enumeration)
@@ -181,17 +207,19 @@ Logout:
 - ✅ CORS locked to `CLIENT_URL` — no wildcard
 - ✅ No secrets in code — all via `process.env`
 - ✅ `passport session: false` — sessions managed via JWT only
+- ✅ Rate Limiting applied to sensitive auth endpoints (login, signup, forgot password)
+- ✅ Helmet configuration for secure HTTP headers
 
 ---
 
 ## Protecting Routes
 
-Use the `requireAuth` middleware on any route that needs a logged-in user:
+Use the `protectRoute` middleware on any route that needs a logged-in user:
 
 ```js
-import { requireAuth } from '../middleware/requireAuth.js';
+import protectRoute from '../middleware/protectRoute.js';
 
-router.get('/toolspaces', requireAuth, getToolSpaces);
+router.get('/toolspaces', protectRoute, getToolSpaces);
 // req.userId is available inside the handler
 ```
 
@@ -200,24 +228,26 @@ router.get('/toolspaces', requireAuth, getToolSpaces);
 ## Dependencies
 
 ```bash
-npm install express mongoose passport passport-google-oauth20 passport-github2 jsonwebtoken bcryptjs cookie-parser cors dotenv
+npm install express mongoose passport passport-google-oauth20 passport-github2 jsonwebtoken bcryptjs cookie-parser cors dotenv express-rate-limit express-session express-validator helmet nodemailer connect-mongo
 ```
 
-| Package                  | Purpose                                 |
-| ------------------------ | --------------------------------------- |
-| `express`                | Web framework                           |
-| `mongoose`               | MongoDB ODM                             |
-| `passport`               | Auth middleware orchestration           |
-| `passport-google-oauth20`| Google OAuth 2.0 strategy              |
-| `passport-github2`       | GitHub OAuth 2.0 strategy              |
-| `jsonwebtoken`           | Sign and verify JWTs                   |
-| `bcryptjs`               | Password hashing (saltRounds: 12)      |
-| `cookie-parser`          | Parse httpOnly cookies from requests   |
-| `cors`                   | Cross-origin resource sharing          |
-| `dotenv`                 | Load `.env` into `process.env`         |
+| Package | Purpose |
+| :--- | :--- |
+| `express` | Web framework |
+| `mongoose` | MongoDB ODM |
+| `passport` | Auth middleware orchestration |
+| `passport-google-oauth20`| Google OAuth 2.0 strategy |
+| `passport-github2` | GitHub OAuth 2.0 strategy |
+| `jsonwebtoken` | Sign and verify JWTs |
+| `bcryptjs` | Password hashing (saltRounds: 12) |
+| `cookie-parser` | Parse httpOnly cookies from requests |
+| `cors` | Cross-origin resource sharing |
+| `dotenv` | Load `.env` into `process.env` |
+| `express-rate-limit` | Limit repeated requests to public APIs (auth protection) |
+| `express-session` | Session support (used optionally/by Passport) |
+| `express-validator` | Request validation middleware |
+| `helmet` | HTTP header security configuration |
+| `nodemailer` | Send verification and reset emails |
+| `connect-mongo` | MongoDB session store |
 
 ---
-
-## License
-
-Private.

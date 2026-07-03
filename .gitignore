@@ -3,11 +3,7 @@ node_modules/
 
 # ── Environment / Secrets (NEVER commit these) ────────────────
 .env
-.env.local
-.env.production
-.env.*.local
-
-# Keep the template so new devs know what vars to set
+.env.*
 !.env.example
 
 # ── Logs ──────────────────────────────────────────────────────
@@ -18,9 +14,14 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# ── Test Coverage ─────────────────────────────────────────────
+coverage/
+.nyc_output/
+
 # ── OS / Editor ───────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+desktop.ini
 .idea/
 .vscode/
 *.suo

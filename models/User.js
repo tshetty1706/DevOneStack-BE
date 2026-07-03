@@ -1,16 +1,37 @@
 import mongoose from "mongoose";
+import bcrypt from "bcryptjs";
 
-const userSchema = new mongoose.Schema(
-    {
-        name: { type: String, required: true },
-        email: { type: String, required: true, unique: true, lowercase: true },
-        avatar: { type: String },
-        password: { type: String, select: false }, // only for email/password users
-        provider: { type: String, enum: ["local", "google", "github"], required: true },
-        providerId: { type: String }, // google sub / github id
-        refreshToken: { type: String, select: false },
-    },
-    { timestamps: true }
-);
+const UserSchema = new mongoose.Schema({
+  username:     { type: String, unique: true, sparse: true, trim: true },
+  email:        { type: String, unique: true, sparse: true, lowercase: true, trim: true },
+  passwordHash: { type: String, select: false },
+  githubId:     { type: String, unique: true, sparse: true },
+  googleId:     { type: String, unique: true, sparse: true },
+  avatarUrl:    { type: String },
+  displayName:  { type: String },
+  provider:     { type: String, enum: ['local','github','google'], default: 'local' },
+  isVerified:        { type: Boolean, default: false },
+  verifyToken:       { type: String, select: false },
+  verifyTokenExpiry: { type: Date,   select: false },
+  resetToken:        { type: String, select: false },
+  resetTokenExpiry:  { type: Date,   select: false },
+  loginAttempts: { type: Number, default: 0 },
+  lockUntil:     { type: Date },
+}, { timestamps: true });
 
-export default mongoose.model("User", userSchema);
+UserSchema.pre('save', async function(next) {
+  if (!this.isModified('passwordHash')) return next();
+  this.passwordHash = await bcrypt.hash(this.passwordHash, 12);
+  next();
+});
+
+UserSchema.methods.comparePassword = async function(plain) {
+  if (!this.passwordHash) return false;
+  return bcrypt.compare(plain, this.passwordHash);
+};
+
+UserSchema.virtual('isLocked').get(function() {
+  return this.lockUntil && this.lockUntil > Date.now();
+});
+
+export default mongoose.model('User', UserSchema);
