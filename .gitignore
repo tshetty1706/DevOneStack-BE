@@ -26,3 +26,7 @@ desktop.ini
 .idea/
 *.suo
 *.sw?
+
+# Agent / IDE config & temp files
+.agents/
+.gemini/

@@ -118,12 +118,20 @@ Backend/
 | GET | `/:id` | Get a single space |
 | PUT | `/:id` | Update a space |
 | DELETE | `/:id` | Delete a space |
+| PATCH | `/:spaceId/recount` | Recount and repair all space statistics counters |
+| PATCH | `/:spaceId/[notes|snippets|docs|repos|prompts|communities]/:id/pin` | Pin/unpin a space sub-resource |
+
+### Dashboard `/api/dashboard` *(protected)*
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/pinned` | Retrieve all pinned items (notes, snippets, docs, repos, prompts, communities) across spaces |
 
 ### History `/api/history` *(protected)*
 
 | Method | Endpoint | Description |
 |---|---|---|
-| GET | `/` | Get recent activity for current user |
+| GET | `/` | Get recent activity. Supports filtering by `?spaceId=ID` |
 
 ### Inbox `/api/inbox` *(protected)*
 

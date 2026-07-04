@@ -10,6 +10,7 @@ const BoilerplateSchema = new mongoose.Schema({
   isPinned: { type: Boolean, default: false },
   usedCount:{ type: Number, default: 0 },
   lastUsed: { type: Date },
+  linkedItemId: { type: mongoose.Schema.Types.ObjectId }
 }, { timestamps: true });
 
 export default mongoose.model('Boilerplate', BoilerplateSchema);

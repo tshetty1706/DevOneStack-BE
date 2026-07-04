@@ -2,7 +2,12 @@ import History from "../models/History.js";
 
 export const getHistory = async (req, res) => {
   try {
-    const history = await History.find({ owner: req.user._id })
+    const { spaceId } = req.query;
+    const filter = { owner: req.user._id };
+    if (spaceId) {
+      filter['meta.spaceId'] = spaceId;
+    }
+    const history = await History.find(filter)
       .sort({ createdAt: -1 })
       .limit(20);
     return res.json(history);

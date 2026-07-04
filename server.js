@@ -10,6 +10,14 @@ import inboxRoutes from "./routes/inbox.routes.js";
 import boilerplateRoutes from "./routes/boilerplate.routes.js";
 import spaceRoutes from "./routes/space.routes.js";
 import historyRoutes from "./routes/history.routes.js";
+import docRoutes from "./routes/doc.routes.js";
+import noteRoutes from "./routes/note.routes.js";
+import snippetRoutes from "./routes/snippet.routes.js";
+import repoRoutes from "./routes/repo.routes.js";
+import promptRoutes from "./routes/prompt.routes.js";
+import communityRoutes from "./routes/community.routes.js";
+import tagRoutes from "./routes/tag.routes.js";
+import dashboardRoutes from "./routes/dashboard.routes.js";
 
 dotenv.config();
 
@@ -41,6 +49,14 @@ app.use("/api/inbox", inboxRoutes);
 app.use("/api/boilerplates", boilerplateRoutes);
 app.use("/api/spaces", spaceRoutes);
 app.use("/api/history", historyRoutes);
+app.use("/api/dashboard", dashboardRoutes);
+app.use("/api/spaces/:spaceId/docs", docRoutes);
+app.use("/api/spaces/:spaceId/notes", noteRoutes);
+app.use("/api/spaces/:spaceId/snippets", snippetRoutes);
+app.use("/api/spaces/:spaceId/repos", repoRoutes);
+app.use("/api/spaces/:spaceId/prompts", promptRoutes);
+app.use("/api/spaces/:spaceId/communities", communityRoutes);
+app.use("/api/spaces/:spaceId/tags", tagRoutes);
 
 // Global Error Handler
 app.use((err, req, res, next) => {
