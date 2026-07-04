@@ -8,6 +8,8 @@ import passport from "./config/passport.js";
 import authRoutes from "./routes/auth.routes.js";
 import inboxRoutes from "./routes/inbox.routes.js";
 import boilerplateRoutes from "./routes/boilerplate.routes.js";
+import spaceRoutes from "./routes/space.routes.js";
+import historyRoutes from "./routes/history.routes.js";
 
 dotenv.config();
 
@@ -37,6 +39,8 @@ app.use(passport.initialize());
 app.use("/api/auth", authRoutes);
 app.use("/api/inbox", inboxRoutes);
 app.use("/api/boilerplates", boilerplateRoutes);
+app.use("/api/spaces", spaceRoutes);
+app.use("/api/history", historyRoutes);
 
 // Global Error Handler
 app.use((err, req, res, next) => {

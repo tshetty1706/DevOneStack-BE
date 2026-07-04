@@ -1,12 +1,12 @@
-# ── Dependencies ──────────────────────────────────────────────
+# Dependencies
 node_modules/
 
-# ── Environment / Secrets (NEVER commit these) ────────────────
+# Environment — NEVER commit
 .env
 .env.*
 !.env.example
 
-# ── Logs ──────────────────────────────────────────────────────
+# Logs
 logs/
 *.log
 npm-debug.log*
@@ -14,15 +14,15 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# ── Test Coverage ─────────────────────────────────────────────
+# Test coverage
 coverage/
 .nyc_output/
 
-# ── OS / Editor ───────────────────────────────────────────────
+# OS / Editor
 .DS_Store
 Thumbs.db
 desktop.ini
-.idea/
 .vscode/
+.idea/
 *.suo
 *.sw?
