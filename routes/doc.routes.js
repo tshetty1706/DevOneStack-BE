@@ -14,7 +14,7 @@ router.get('/',                  ctrl.listDocs);
 router.post('/url',              ctrl.addUrlDoc);
 router.post('/upload',           upload.single('file'), ctrl.uploadDoc);
 router.get('/search',            ctrl.searchDocs);
-router.get('/:docId/signed-url', ctrl.getSignedDocUrl);
+router.get('/:docId/file', protect, ctrl.getDocFile);
 router.patch('/:docId/pin',      togglePin(Doc));
 router.patch('/:docId',          ctrl.updateDoc);
 router.delete('/:docId',         ctrl.deleteDoc);

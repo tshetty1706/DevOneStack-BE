@@ -9,7 +9,7 @@ export const getHistory = async (req, res) => {
     }
     const history = await History.find(filter)
       .sort({ createdAt: -1 })
-      .limit(20);
+      .limit(5);
     return res.json(history);
   } catch (err) {
     console.error("getHistory error:", err);

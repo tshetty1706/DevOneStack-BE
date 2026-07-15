@@ -5,6 +5,8 @@ import uploadToCloudinary from '../utils/uploadToCloudinary.js';
 import deleteFromCloudinary from '../utils/deleteFromCloudinary.js';
 import getSignedUrl from '../utils/getSignedUrl.js';
 import { syncPinnedItem } from '../utils/pinSync.js';
+import axios from 'axios';
+import cloudinary from '../config/cloudinary.js';
 
 // GET /api/spaces/:spaceId/docs
 export const listDocs = async (req, res) => {
@@ -141,28 +143,66 @@ export const uploadDoc = async (req, res) => {
   }
 };
 
-// GET /api/spaces/:spaceId/docs/:docId/signed-url
-export const getSignedDocUrl = async (req, res) => {
+// GET /api/spaces/:spaceId/docs/:docId/file
+export const getDocFile = async (req, res) => {
   try {
     const doc = await Doc.findOne({
       _id: req.params.docId,
-      owner: req.user._id,
+      owner: req.user._id,       // ownership check — always
     });
     if (!doc) return res.status(404).json({ error: 'Not found' });
-    if (doc.type === 'url') return res.json({ url: doc.url });
 
-    const resourceType = doc.type === 'pdf' ? 'raw' : 'image';
-    let signedUrl;
-    try {
-      signedUrl = getSignedUrl(doc.cloudinaryPublicId, resourceType, 3600);
-    } catch (signErr) {
-      console.error("Cloudinary sign failed:", signErr);
-      return res.status(500).json({ error: 'Failed to sign Cloudinary URL. Check API keys.' });
+    // For URL type — just return the URL
+    if (doc.type === 'url') {
+      return res.json({ url: doc.url, type: 'url' });
     }
 
-    res.json({ url: signedUrl });
+    // For images — return signed Cloudinary URL (images open fine)
+    if (doc.type === 'image') {
+      const signedUrl = cloudinary.url(doc.cloudinaryPublicId, {
+        sign_url:      true,
+        type:          'authenticated',
+        expires_at:    Math.floor(Date.now() / 1000) + 3600,
+        resource_type: 'image',
+        secure:        true,
+      });
+      return res.json({ url: signedUrl, type: 'image' });
+    }
+
+    // For PDFs — stream through backend with inline header
+    if (doc.type === 'pdf') {
+      // Generate a short-lived signed URL to fetch FROM Cloudinary
+      const fetchUrl = cloudinary.url(doc.cloudinaryPublicId, {
+        sign_url:      true,
+        type:          'authenticated',
+        expires_at:    Math.floor(Date.now() / 1000) + 300, // 5 min — just for fetching
+        resource_type: 'raw',
+        secure:        true,
+      });
+
+      // Fetch from Cloudinary and stream to client with inline header
+      const response = await axios.get(fetchUrl, {
+        responseType: 'stream',
+        timeout: 30000,
+      });
+
+      // These headers tell the browser to DISPLAY inline, not download
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="${doc.title}.pdf"`);
+      res.setHeader('Cache-Control', 'private, max-age=300');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+
+      // Stream PDF bytes to browser — never fully loaded into memory
+      response.data.pipe(res);
+
+      response.data.on('error', (err) => {
+        console.error('PDF stream error:', err);
+        if (!res.headersSent) res.status(500).end();
+      });
+    }
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('getDocFile error:', err);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
   }
 };
 
