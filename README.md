@@ -1,6 +1,6 @@
 # DevOneStack — Backend
 
-Express + MongoDB REST API with JWT auth, Google/GitHub OAuth, Spaces, History tracking, and Inbox.
+Express + MongoDB REST API with JWT auth, Google OAuth, Spaces, History tracking, and Inbox.
 
 ---
 
@@ -11,7 +11,7 @@ Express + MongoDB REST API with JWT auth, Google/GitHub OAuth, Spaces, History t
 | Runtime | Node.js (ESM) |
 | Framework | Express 5 |
 | Database | MongoDB Atlas via Mongoose 8 |
-| Auth | Passport.js (Google + GitHub OAuth) + JWT |
+| Auth | Passport.js (Google OAuth) + JWT |
 | Password Hashing | bcryptjs (12 rounds) |
 | Cookies | httpOnly JWT — never exposed to JS |
 | Security | Helmet, CORS, Rate Limiting |
@@ -37,8 +37,6 @@ JWT_SECRET=<64-char random hex>
 JWT_REFRESH_SECRET=<64-char random hex>
 GOOGLE_CLIENT_ID=from_google_cloud_console
 GOOGLE_CLIENT_SECRET=from_google_cloud_console
-GITHUB_CLIENT_ID=from_github_settings
-GITHUB_CLIENT_SECRET=from_github_settings
 CLIENT_URL=http://localhost:5173
 SERVER_URL=http://localhost:9000
 NODE_ENV=development
@@ -61,7 +59,7 @@ Server runs at `http://localhost:9000`
 Backend/
 ├── config/
 │   ├── db.js               # MongoDB connection
-│   └── passport.js         # Google + GitHub strategies
+│   └── passport.js         # Google strategy
 ├── controllers/
 │   ├── auth.controller.js
 │   ├── boilerplate.controller.js
@@ -107,7 +105,6 @@ Backend/
 | POST | `/reset-password/:token` | Set new password |
 | POST | `/refresh` | Rotate access token |
 | GET | `/google` | Start Google OAuth |
-| GET | `/github` | Start GitHub OAuth |
 
 ### Spaces `/api/spaces` *(protected)*
 
@@ -160,11 +157,6 @@ Register these in your OAuth provider dashboards:
 **Google Cloud Console:**
 ```
 http://localhost:9000/api/auth/google/callback
-```
-
-**GitHub Developer Settings:**
-```
-http://localhost:9000/api/auth/github/callback
 ```
 
 ---

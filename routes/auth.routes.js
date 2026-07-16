@@ -64,40 +64,4 @@ router.get(
   }
 );
 
-// Passport GitHub OAuth
-router.get(
-  "/github",
-  passport.authenticate("github", { session: false })
-);
-
-router.get(
-  "/github/callback",
-  (req, res, next) => {
-    const clientUrl = process.env.CLIENT_URL || process.env.FRONTEND_URL || "http://localhost:5173";
-    passport.authenticate("github", {
-      session: false,
-      failureRedirect: `${clientUrl}/login?error=oauth_failed`,
-    })(req, res, next);
-  },
-  async (req, res) => {
-    const clientUrl = process.env.CLIENT_URL || process.env.FRONTEND_URL || "http://localhost:5173";
-    try {
-      const accessToken = signAccessToken(req.user._id);
-      const refreshToken = signRefreshToken(req.user._id);
-
-      res.cookie("refreshToken", refreshToken, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-        maxAge: 7 * 24 * 60 * 60 * 1000,
-      });
-
-      return res.redirect(`${clientUrl}/oauth/callback#token=${accessToken}`);
-    } catch (err) {
-      console.error("GitHub OAuth callback error:", err);
-      return res.redirect(`${clientUrl}/login?error=oauth_failed`);
-    }
-  }
-);
-
 export default router;

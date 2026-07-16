@@ -11,7 +11,7 @@ export default async (req, res, next) => {
   let decoded;
   try {
     decoded = jwt.verify(token, process.env.JWT_SECRET);
-  } catch(e) {
+  } catch (e) {
     if (e.name === 'TokenExpiredError') {
       return res.status(401).json({ error: 'TOKEN_EXPIRED' });
     }
