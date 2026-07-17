@@ -9,6 +9,7 @@ import Repo from "../models/Repo.js";
 import Prompt from "../models/Prompt.js";
 import Community from "../models/Community.js";
 import deleteFromCloudinary from "../utils/deleteFromCloudinary.js";
+import { getIconKeyByName } from "../utils/iconMapping.js";
 
 export const getSpaces = async (req, res) => {
   try {
@@ -37,24 +38,13 @@ export const getSpace = async (req, res) => {
 
 export const createSpace = async (req, res) => {
   try {
-    const { name, tags } = req.body;
+    const { name, tags, iconKey } = req.body;
     if (!name) {
       return res.status(400).json({ error: "Space name is required" });
     }
 
-    // Determine icon based on name
-    const lowerName = name.toLowerCase();
-    let icon = 'code';
-    if (lowerName.includes('react')) icon = 'react';
-    else if (lowerName.includes('docker')) icon = 'docker';
-    else if (lowerName.includes('node')) icon = 'nodejs';
-    else if (lowerName.includes('mongo')) icon = 'mongodb';
-    else if (lowerName.includes('python')) icon = 'python';
-    else if (lowerName.includes('kube') || lowerName.includes('k8s')) icon = 'kubernetes';
-    else if (lowerName.includes('aws') || lowerName.includes('amazon')) icon = 'aws';
-    else if (lowerName.includes('go')) icon = 'go';
-    else if (lowerName.includes('rust')) icon = 'rust';
-    else if (lowerName.includes('tailwind')) icon = 'tailwind';
+    // Determine icon and iconKey based on request body or name
+    const finalIconKey = iconKey || getIconKeyByName(name);
 
     // Parse tags if it's a comma-separated string
     let parsedTags = [];
@@ -67,7 +57,8 @@ export const createSpace = async (req, res) => {
     const space = await Space.create({
       owner: req.user._id,
       name,
-      icon,
+      icon: finalIconKey, // legacy support
+      iconKey: finalIconKey,
       tags: parsedTags,
       progress: 0,
       docsCount: 0,
@@ -97,24 +88,19 @@ export const createSpace = async (req, res) => {
 export const updateSpace = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, tags } = req.body;
+    const { name, tags, iconKey } = req.body;
     const update = {};
     if (name !== undefined) {
       update.name = name.trim();
-      // Update icon dynamically if name changed
-      const lowerName = name.toLowerCase();
-      let icon = 'code';
-      if (lowerName.includes('react')) icon = 'react';
-      else if (lowerName.includes('docker')) icon = 'docker';
-      else if (lowerName.includes('node')) icon = 'nodejs';
-      else if (lowerName.includes('mongo')) icon = 'mongodb';
-      else if (lowerName.includes('python')) icon = 'python';
-      else if (lowerName.includes('kube') || lowerName.includes('k8s')) icon = 'kubernetes';
-      else if (lowerName.includes('aws') || lowerName.includes('amazon')) icon = 'aws';
-      else if (lowerName.includes('go')) icon = 'go';
-      else if (lowerName.includes('rust')) icon = 'rust';
-      else if (lowerName.includes('tailwind')) icon = 'tailwind';
-      update.icon = icon;
+    }
+
+    if (iconKey !== undefined) {
+      update.iconKey = iconKey;
+      update.icon = iconKey; // legacy support
+    } else if (name !== undefined) {
+      const autoIconKey = getIconKeyByName(name);
+      update.iconKey = autoIconKey;
+      update.icon = autoIconKey;
     }
 
     if (tags !== undefined) {
