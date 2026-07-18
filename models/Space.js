@@ -13,9 +13,10 @@ const SpaceSchema = new mongoose.Schema({
   snippetsCount:    { type: Number, default: 0, min: 0 },
   reposCount:       { type: Number, default: 0, min: 0 },
   promptsCount:     { type: Number, default: 0, min: 0 },
-  communitiesCount: { type: Number, default: 0, min: 0 }
+  communitiesCount: { type: Number, default: 0, min: 0 },
+  isPinned:         { type: Boolean, default: false }
 }, { timestamps: true });
 
-SpaceSchema.index({ owner: 1, updatedAt: -1 });
+SpaceSchema.index({ owner: 1, isPinned: -1, updatedAt: -1 });
 
 export default mongoose.model('Space', SpaceSchema);

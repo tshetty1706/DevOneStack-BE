@@ -14,7 +14,7 @@ import { getIconKeyByName } from "../utils/iconMapping.js";
 export const getSpaces = async (req, res) => {
   try {
     const ownerId = req.user._id;
-    const spaces = await Space.find({ owner: ownerId }).sort("-createdAt");
+    const spaces = await Space.find({ owner: ownerId }).sort({ isPinned: -1, updatedAt: -1 });
     return res.json(spaces);
   } catch (err) {
     console.error("getSpaces error:", err);
@@ -88,10 +88,13 @@ export const createSpace = async (req, res) => {
 export const updateSpace = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, tags, iconKey } = req.body;
+    const { name, tags, iconKey, isPinned } = req.body;
     const update = {};
     if (name !== undefined) {
       update.name = name.trim();
+    }
+    if (isPinned !== undefined) {
+      update.isPinned = isPinned;
     }
 
     if (iconKey !== undefined) {
@@ -193,7 +196,12 @@ export const recountSpace = async (req, res) => {
 
     const updated = await Space.findOneAndUpdate(
       { _id: spaceId, owner },
-      { $set: { docsCount, notesCount, snippetsCount, reposCount, promptsCount, communitiesCount } },
+      { 
+        $set: { 
+          docsCount, notesCount, snippetsCount, reposCount, promptsCount, communitiesCount,
+          updatedAt: new Date()
+        } 
+      },
       { new: true }
     );
 
