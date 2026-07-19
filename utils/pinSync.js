@@ -42,7 +42,7 @@ export const syncPinnedItem = async (userId, spaceId, itemId, itemType, isPinned
 
 export const togglePin = (Model) => async (req, res) => {
   try {
-    const itemId = req.params.id || req.params.noteId || req.params.docId;
+    const itemId = req.params.id || req.params.learningId || req.params.noteId || req.params.docId;
     const item = await Model.findOne({ _id: itemId, owner: req.user._id });
     if (!item) return res.status(404).json({ error: 'Not found' });
 

@@ -14,7 +14,7 @@ export const listDocs = async (req, res) => {
     const { spaceId } = req.params;
     const { lastId, tag } = req.query;
 
-    const filter = { spaceId, owner: req.user._id };
+    const filter = { spaceId, owner: req.user._id, isAttachment: { $ne: true } };
     if (lastId) filter._id = { $gt: lastId };
     if (tag)    filter.tags = tag;
 
@@ -71,7 +71,7 @@ export const addUrlDoc = async (req, res) => {
 export const uploadDoc = async (req, res) => {
   try {
     const { spaceId } = req.params;
-    const { title, caption, tags } = req.body;
+    const { title, caption, tags, isAttachment } = req.body;
     const file = req.file;
 
     if (!file) return res.status(400).json({ error: 'No file provided' });
@@ -123,19 +123,22 @@ export const uploadDoc = async (req, res) => {
       height:             cloudinaryResult.height || null,
       caption:            caption?.trim(),
       tags:               parsedTags.map(t => t.trim().toLowerCase()),
+      isAttachment:       isAttachment === 'true' || isAttachment === true,
     });
 
-    await Space.findOneAndUpdate(
-      { _id: spaceId, owner: req.user._id },
-      { $inc: { docsCount: 1 } }
-    );
+    if (!doc.isAttachment) {
+      await Space.findOneAndUpdate(
+        { _id: spaceId, owner: req.user._id },
+        { $inc: { docsCount: 1 } }
+      );
 
-    await History.create({
-      owner: req.user._id,
-      action: 'created_doc',
-      label: `Uploaded doc "${doc.title}"`,
-      meta: { spaceId, docId: doc._id }
-    });
+      await History.create({
+        owner: req.user._id,
+        action: 'created_doc',
+        label: `Uploaded doc "${doc.title}"`,
+        meta: { spaceId, docId: doc._id }
+      });
+    }
 
     res.status(201).json({ doc });
   } catch (err) {
@@ -157,27 +160,23 @@ export const getDocFile = async (req, res) => {
       return res.json({ url: doc.url, type: 'url' });
     }
 
-    // For images — return signed Cloudinary URL (images open fine)
+    // For images — return signed Cloudinary URL using private_download_url
     if (doc.type === 'image') {
-      const signedUrl = cloudinary.url(doc.cloudinaryPublicId, {
-        sign_url:      true,
+      const signedUrl = cloudinary.utils.private_download_url(doc.cloudinaryPublicId, doc.format || 'jpg', {
         type:          'authenticated',
-        expires_at:    Math.floor(Date.now() / 1000) + 3600,
         resource_type: 'image',
-        secure:        true,
+        expires_at:    Math.floor(Date.now() / 1000) + 3600,
       });
       return res.json({ url: signedUrl, type: 'image' });
     }
 
     // For PDFs — stream through backend with inline header
     if (doc.type === 'pdf') {
-      // Generate a short-lived signed URL to fetch FROM Cloudinary
-      const fetchUrl = cloudinary.url(doc.cloudinaryPublicId, {
-        sign_url:      true,
+      // Generate a short-lived signed URL to fetch FROM Cloudinary using private_download_url
+      const fetchUrl = cloudinary.utils.private_download_url(doc.cloudinaryPublicId, doc.format || 'pdf', {
         type:          'authenticated',
-        expires_at:    Math.floor(Date.now() / 1000) + 300, // 5 min — just for fetching
         resource_type: 'raw',
-        secure:        true,
+        expires_at:    Math.floor(Date.now() / 1000) + 300, // 5 min — just for fetching
       });
 
       // Fetch from Cloudinary and stream to client with inline header
@@ -280,6 +279,7 @@ export const searchDocs = async (req, res) => {
     const docs = await Doc.find({
       spaceId,
       owner: req.user._id,
+      isAttachment: { $ne: true },
       $or: [
         { title:   { $regex: q, $options: 'i' } },
         { caption: { $regex: q, $options: 'i' } },

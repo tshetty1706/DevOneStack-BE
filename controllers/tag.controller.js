@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import Note from '../models/Note.js';
+import Learning from '../models/Learning.js';
 import Snippet from '../models/Snippet.js';
 import Doc from '../models/Doc.js';
 import Repo from '../models/Repo.js';
@@ -19,7 +19,7 @@ export const getAllTags = async (req, res) => {
     const ownerObjectId = new mongoose.Types.ObjectId(owner);
 
     const collections = [
-      { model: Note,      name: 'notes' },
+      { model: Learning,  name: 'learnings' },
       { model: Snippet,   name: 'snippets' },
       { model: Doc,       name: 'docs' },
       { model: Repo,      name: 'repos' },
@@ -83,19 +83,19 @@ export const getTagContent = async (req, res) => {
       tags: tagRegex
     };
 
-    const [docs, notes, snippets, repos, prompts, communities] = await Promise.all([
+    const [docs, learnings, snippets, repos, prompts, communities] = await Promise.all([
       Doc.find(filter).select('title type url caption tags cloudinaryUrl isPinned createdAt').limit(20),
-      Note.find(filter).select('title preview tags isPinned wordCount updatedAt').limit(20),
+      Learning.find(filter).select('title type content tags isPinned createdAt').limit(20),
       Snippet.find(filter).select('name caption language preview tags isPinned').limit(20),
       Repo.find(filter).select('name url caption platform tags isPinned').limit(20),
       Prompt.find(filter).select('title body caption model tags isPinned usedCount').limit(20),
       Community.find(filter).select('name url platform caption tags isPinned').limit(20),
     ]);
 
-    const total = docs.length + notes.length + snippets.length +
+    const total = docs.length + learnings.length + snippets.length +
                   repos.length + prompts.length + communities.length;
 
-    res.json({ docs, notes, snippets, repos, prompts, communities, total });
+    res.json({ docs, learnings, snippets, repos, prompts, communities, total });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -119,7 +119,7 @@ export const renameTag = async (req, res) => {
     const update = { $set: { 'tags.$': cleanNew } };
 
     await Promise.all([
-      Note.updateMany(filter, update),
+      Learning.updateMany(filter, update),
       Snippet.updateMany(filter, update),
       Doc.updateMany(filter, update),
       Repo.updateMany(filter, update),
@@ -144,7 +144,7 @@ export const deleteTag = async (req, res) => {
     const update = { $pull: { tags: cleanTag } };
 
     await Promise.all([
-      Note.updateMany(filter, update),
+      Learning.updateMany(filter, update),
       Snippet.updateMany(filter, update),
       Doc.updateMany(filter, update),
       Repo.updateMany(filter, update),

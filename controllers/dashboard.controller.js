@@ -1,4 +1,4 @@
-import Note from '../models/Note.js';
+import Learning from '../models/Learning.js';
 import Snippet from '../models/Snippet.js';
 import Doc from '../models/Doc.js';
 import Repo from '../models/Repo.js';
@@ -9,9 +9,9 @@ export const getAllPinned = async (req, res) => {
   try {
     const owner = req.user._id;
 
-    const [notes, snippets, docs, repos, prompts, communities] = await Promise.all([
-      Note.find({ owner, isPinned: true })
-        .select('title preview tags spaceId wordCount updatedAt')
+    const [learnings, snippets, docs, repos, prompts, communities] = await Promise.all([
+      Learning.find({ owner, isPinned: true })
+        .select('title type content tags spaceId codeExample updatedAt')
         .populate('spaceId', 'name')
         .limit(10),
       Snippet.find({ owner, isPinned: true })
@@ -36,10 +36,10 @@ export const getAllPinned = async (req, res) => {
         .limit(10),
     ]);
 
-    const total = notes.length + snippets.length + docs.length +
+    const total = learnings.length + snippets.length + docs.length +
                   repos.length + prompts.length + communities.length;
 
-    res.json({ notes, snippets, docs, repos, prompts, communities, total });
+    res.json({ learnings, snippets, docs, repos, prompts, communities, total });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

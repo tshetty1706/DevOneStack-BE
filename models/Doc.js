@@ -21,6 +21,7 @@ const DocSchema = new Schema({
   caption:             { type: String, maxLength: 300 },
   tags:                [{ type: String, trim: true, maxLength: 30 }],
   isPinned:            { type: Boolean, default: false },
+  isAttachment:        { type: Boolean, default: false },
 }, { timestamps: true });
 
 DocSchema.index({ owner: 1, spaceId: 1 });

@@ -1,7 +1,6 @@
 import Space from "../models/Space.js";
 import History from "../models/History.js";
-import Note from "../models/Note.js";
-import NoteContent from "../models/NoteContent.js";
+import Learning from "../models/Learning.js";
 import Snippet from "../models/Snippet.js";
 import SnippetContent from "../models/SnippetContent.js";
 import Doc from "../models/Doc.js";
@@ -62,7 +61,7 @@ export const createSpace = async (req, res) => {
       tags: parsedTags,
       progress: 0,
       docsCount: 0,
-      notesCount: 0,
+      learningsCount: 0,
       snippetsCount: 0,
       reposCount: 0,
       promptsCount: 0,
@@ -139,16 +138,14 @@ export const deleteSpace = async (req, res) => {
     }
 
     // Get IDs for content-split collections
-    const [notes, snippets, docs] = await Promise.all([
-      Note.find({ spaceId }).select('_id'),
+    const [snippets, docs] = await Promise.all([
       Snippet.find({ spaceId }).select('_id'),
       Doc.find({ spaceId, cloudinaryPublicId: { $exists: true } }).select('cloudinaryPublicId type'),
     ]);
 
     // Delete everything in parallel
     await Promise.all([
-      Note.deleteMany({ spaceId }),
-      NoteContent.deleteMany({ noteId: { $in: notes.map(n => n._id) } }),
+      Learning.deleteMany({ spaceId }),
       Snippet.deleteMany({ spaceId }),
       SnippetContent.deleteMany({ snippetId: { $in: snippets.map(s => s._id) } }),
       Doc.deleteMany({ spaceId }),
@@ -184,10 +181,10 @@ export const recountSpace = async (req, res) => {
     const space = await Space.findOne({ _id: spaceId, owner });
     if (!space) return res.status(404).json({ error: 'Not found' });
 
-    const [docsCount, notesCount, snippetsCount, reposCount, promptsCount, communitiesCount] =
+    const [docsCount, learningsCount, snippetsCount, reposCount, promptsCount, communitiesCount] =
       await Promise.all([
         Doc.countDocuments({ spaceId, owner }),
-        Note.countDocuments({ spaceId, owner }),
+        Learning.countDocuments({ spaceId, owner }),
         Snippet.countDocuments({ spaceId, owner }),
         Repo.countDocuments({ spaceId, owner }),
         Prompt.countDocuments({ spaceId, owner }),
@@ -198,7 +195,7 @@ export const recountSpace = async (req, res) => {
       { _id: spaceId, owner },
       { 
         $set: { 
-          docsCount, notesCount, snippetsCount, reposCount, promptsCount, communitiesCount,
+          docsCount, learningsCount, snippetsCount, reposCount, promptsCount, communitiesCount,
           updatedAt: new Date()
         } 
       },
@@ -207,7 +204,7 @@ export const recountSpace = async (req, res) => {
 
     return res.json({
       message: 'Counts repaired',
-      counts: { docsCount, notesCount, snippetsCount, reposCount, promptsCount, communitiesCount }
+      counts: { docsCount, learningsCount, snippetsCount, reposCount, promptsCount, communitiesCount }
     });
   } catch (err) {
     console.error("recountSpace error:", err);
