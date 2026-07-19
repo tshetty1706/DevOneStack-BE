@@ -71,7 +71,7 @@ Backend/
 │   └── rateLimiter.js      # Rate limits for auth endpoints
 ├── models/
 │   ├── User.js
-│   ├── Space.js            # Tool workspaces
+│   ├── Space.js            # Tool workspaces (with isPinned support)
 │   ├── History.js          # Activity log
 │   ├── InboxItem.js
 │   └── Boilerplate.js
@@ -82,7 +82,7 @@ Backend/
 │   ├── inbox.routes.js
 │   └── boilerplate.routes.js
 ├── utils/
-│   ├── email.js            # Email helper (prints link in dev — use EmailJS on frontend)
+│   ├── email.js            # Email helper (prints link in dev)
 │   ├── jwt.js              # JWT sign/verify helpers
 │   └── tokens.js           # Token generation
 └── server.js               # Entry point
@@ -110,12 +110,12 @@ Backend/
 
 | Method | Endpoint | Description |
 |---|---|---|
-| GET | `/` | Get all spaces for current user |
+| GET | `/` | Get all spaces for current user (sorted by pinned state and activity) |
 | POST | `/` | Create a new space |
 | GET | `/:id` | Get a single space |
-| PUT | `/:id` | Update a space |
+| PUT | `/:id` | Update space meta details (supports setting `isPinned`) |
 | DELETE | `/:id` | Delete a space |
-| PATCH | `/:spaceId/recount` | Recount and repair all space statistics counters |
+| PATCH | `/:spaceId/recount` | Recount and repair space stats counters, forcing `updatedAt` update |
 | PATCH | `/:spaceId/[notes|snippets|docs|repos|prompts|communities]/:id/pin` | Pin/unpin a space sub-resource |
 
 ### Dashboard `/api/dashboard` *(protected)*
@@ -163,6 +163,7 @@ http://localhost:9000/api/auth/google/callback
 
 ## Notes
 
-- Email sending in dev just prints the verification link to the console (Nodemailer not configured). Email is sent from the **frontend via EmailJS**.
-- All tokens stored in **httpOnly cookies** — no localStorage.
+- Email sending in dev just prints the verification link to the console. Email is sent from the **frontend via EmailJS**.
+- All tokens stored in **httpOnly cookies** — never exposed to JavaScript.
 - Refresh token stored in MongoDB — logout truly invalidates it.
+- **Dynamic Touch on Recount**: Space counts recalculation triggers a forced `updatedAt` refresh so dashboard activity clocks remain dynamic.
