@@ -44,10 +44,17 @@ export const getAllTags = async (req, res) => {
       const sourceName = collections[i].name;
       results.forEach(({ tag, count }) => {
         if (!tag || tag.trim() === '') return; // skip empty tags
-        // normalize tag to lower-case but keep formatting if needed (let's keep lowercase clean)
         const cleanTag = tag.trim().toLowerCase();
-        if (!merged[cleanTag]) merged[cleanTag] = { tag: cleanTag, count: 0, sources: [] };
+        if (!merged[cleanTag]) {
+          merged[cleanTag] = {
+            tag: cleanTag,
+            count: 0,
+            sources: [],
+            breakdown: { learnings: 0, snippets: 0, docs: 0, repos: 0, prompts: 0, communities: 0 }
+          };
+        }
         merged[cleanTag].count += count;
+        merged[cleanTag].breakdown[sourceName] = (merged[cleanTag].breakdown[sourceName] || 0) + count;
         if (!merged[cleanTag].sources.includes(sourceName)) {
           merged[cleanTag].sources.push(sourceName);
         }
