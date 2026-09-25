@@ -1,12 +1,16 @@
 import Doc from '../models/Doc.js';
-import Space from '../models/Space.js';
-import History from '../models/History.js';
 import uploadToCloudinary from '../utils/uploadToCloudinary.js';
 import deleteFromCloudinary from '../utils/deleteFromCloudinary.js';
-import getSignedUrl from '../utils/getSignedUrl.js';
 import { syncPinnedItem } from '../utils/pinSync.js';
 import axios from 'axios';
 import cloudinary from '../config/cloudinary.js';
+import {
+  verifySpaceOwnership,
+  updateSpaceResourceCount,
+  logUserHistory,
+  parseTags,
+  sendError,
+} from '../utils/spaceHelpers.js';
 
 // GET /api/spaces/:spaceId/docs
 export const listDocs = async (req, res) => {
@@ -25,7 +29,7 @@ export const listDocs = async (req, res) => {
 
     res.json({ docs, hasMore: docs.length === 20 });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to load docs' });
+    sendError(res, err, 'Failed to load docs');
   }
 };
 
@@ -35,8 +39,7 @@ export const addUrlDoc = async (req, res) => {
     const { title, url, caption, tags } = req.body;
     const { spaceId } = req.params;
 
-    // Verify space ownership
-    const space = await Space.findOne({ _id: spaceId, owner: req.user._id });
+    const space = await verifySpaceOwnership(spaceId, req.user._id);
     if (!space) return res.status(404).json({ error: 'Space not found' });
 
     const doc = await Doc.create({
@@ -46,24 +49,21 @@ export const addUrlDoc = async (req, res) => {
       type:    'url',
       url:     url.trim(),
       caption: caption?.trim(),
-      tags:    Array.isArray(tags) ? tags.map(t => t.trim().toLowerCase()) : [],
+      tags:    parseTags(tags),
     });
 
-    await Space.findOneAndUpdate(
-      { _id: spaceId, owner: req.user._id },
-      { $inc: { docsCount: 1 } }
+    await updateSpaceResourceCount(spaceId, 'docsCount', 1);
+
+    await logUserHistory(
+      req.user._id,
+      'created_doc',
+      `Added url doc "${doc.title}"`,
+      { spaceId, docId: doc._id }
     );
-
-    await History.create({
-      owner: req.user._id,
-      action: 'created_doc',
-      label: `Added url doc "${doc.title}"`,
-      meta: { spaceId, docId: doc._id }
-    });
 
     res.status(201).json({ doc });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 };
 
@@ -76,8 +76,7 @@ export const uploadDoc = async (req, res) => {
 
     if (!file) return res.status(400).json({ error: 'No file provided' });
 
-    // Verify space ownership before upload
-    const space = await Space.findOne({ _id: spaceId, owner: req.user._id });
+    const space = await verifySpaceOwnership(spaceId, req.user._id);
     if (!space) return res.status(404).json({ error: 'Space not found' });
 
     const isPdf = file.mimetype === 'application/pdf';
@@ -122,27 +121,24 @@ export const uploadDoc = async (req, res) => {
       width:              cloudinaryResult.width  || null,
       height:             cloudinaryResult.height || null,
       caption:            caption?.trim(),
-      tags:               parsedTags.map(t => t.trim().toLowerCase()),
+      tags:               parseTags(parsedTags),
       isAttachment:       isAttachment === 'true' || isAttachment === true,
     });
 
     if (!doc.isAttachment) {
-      await Space.findOneAndUpdate(
-        { _id: spaceId, owner: req.user._id },
-        { $inc: { docsCount: 1 } }
-      );
+      await updateSpaceResourceCount(spaceId, 'docsCount', 1);
 
-      await History.create({
-        owner: req.user._id,
-        action: 'created_doc',
-        label: `Uploaded doc "${doc.title}"`,
-        meta: { spaceId, docId: doc._id }
-      });
+      await logUserHistory(
+        req.user._id,
+        'created_doc',
+        `Uploaded doc "${doc.title}"`,
+        { spaceId, docId: doc._id }
+      );
     }
 
     res.status(201).json({ doc });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 };
 
@@ -151,7 +147,7 @@ export const getDocFile = async (req, res) => {
   try {
     const doc = await Doc.findOne({
       _id: req.params.docId,
-      owner: req.user._id,       // ownership check — always
+      owner: req.user._id,
     });
     if (!doc) return res.status(404).json({ error: 'Not found' });
 
@@ -172,26 +168,22 @@ export const getDocFile = async (req, res) => {
 
     // For PDFs — stream through backend with inline header
     if (doc.type === 'pdf') {
-      // Generate a short-lived signed URL to fetch FROM Cloudinary using private_download_url
       const fetchUrl = cloudinary.utils.private_download_url(doc.cloudinaryPublicId, doc.format || 'pdf', {
         type:          'authenticated',
         resource_type: 'raw',
-        expires_at:    Math.floor(Date.now() / 1000) + 300, // 5 min — just for fetching
+        expires_at:    Math.floor(Date.now() / 1000) + 300,
       });
 
-      // Fetch from Cloudinary and stream to client with inline header
       const response = await axios.get(fetchUrl, {
         responseType: 'stream',
         timeout: 30000,
       });
 
-      // These headers tell the browser to DISPLAY inline, not download
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `inline; filename="${doc.title}.pdf"`);
       res.setHeader('Cache-Control', 'private, max-age=300');
       res.setHeader('X-Content-Type-Options', 'nosniff');
 
-      // Stream PDF bytes to browser — never fully loaded into memory
       response.data.pipe(res);
 
       response.data.on('error', (err) => {
@@ -201,7 +193,7 @@ export const getDocFile = async (req, res) => {
     }
   } catch (err) {
     console.error('getDocFile error:', err);
-    if (!res.headersSent) res.status(500).json({ error: err.message });
+    if (!res.headersSent) sendError(res, err);
   }
 };
 
@@ -212,7 +204,7 @@ export const updateDoc = async (req, res) => {
     const update = {};
     if (title !== undefined)    update.title   = title.trim();
     if (caption !== undefined)  update.caption = caption.trim();
-    if (tags !== undefined)     update.tags    = tags.map(t => t.trim().toLowerCase());
+    if (tags !== undefined)     update.tags    = parseTags(tags);
     if (isPinned !== undefined) update.isPinned = isPinned;
 
     const doc = await Doc.findOneAndUpdate(
@@ -233,7 +225,7 @@ export const updateDoc = async (req, res) => {
 
     res.json({ doc });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 };
 
@@ -259,14 +251,11 @@ export const deleteDoc = async (req, res) => {
       }
     }
 
-    await Space.findOneAndUpdate(
-      { _id: doc.spaceId, owner: req.user._id, docsCount: { $gt: 0 } },
-      { $inc: { docsCount: -1 } }
-    );
+    await updateSpaceResourceCount(doc.spaceId, 'docsCount', -1);
 
     res.json({ message: 'Deleted' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 };
 
@@ -289,6 +278,6 @@ export const searchDocs = async (req, res) => {
 
     res.json({ docs, count: docs.length });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 };

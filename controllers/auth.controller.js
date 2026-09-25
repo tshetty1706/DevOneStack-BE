@@ -23,41 +23,48 @@ const getCookieOptions = () => ({
 
 export const signup = async (req, res) => {
   try {
-    const { username, email, password } = req.body;
+    const { email, password } = req.body;
 
     // 1. Validate inputs
-    if (!email || !/^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$/.test(email)) {
+    const normalizedEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+    if (!normalizedEmail || !/^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$/.test(normalizedEmail)) {
       return res.status(400).json({ error: "Please enter a valid email address." });
-    }
-    if (!username || !/^[a-zA-Z0-9]{3,20}$/.test(username)) {
-      return res.status(400).json({ error: "That username is taken. Try a different one." }); // username is 3-20 alphanumeric
     }
     if (!password || !isPasswordStrong(password)) {
       return res.status(400).json({ error: "Password needs 8+ chars, one uppercase, one number, one special character." });
     }
 
     // 2. Check duplicate email
-    const duplicateEmail = await User.findOne({ email });
+    const duplicateEmail = await User.findOne({ email: normalizedEmail });
     if (duplicateEmail) {
+      if (!duplicateEmail.isVerified && duplicateEmail.provider === 'local') {
+        // User already started signup but hasn't verified: update password & resend verification email
+        duplicateEmail.passwordHash = password; // pre-save will hash
+        const verifyToken = crypto.randomBytes(32).toString("hex");
+        duplicateEmail.verifyToken = verifyToken;
+        duplicateEmail.verifyTokenExpiry = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
+        await duplicateEmail.save();
+
+        try {
+          await sendVerificationEmail(normalizedEmail, verifyToken);
+        } catch (err) {
+          console.error("Error resending verification email:", err.message);
+        }
+
+        return res.status(200).json({ message: "Verification email resent! Please check your inbox." });
+      }
+
       return res.status(400).json({ error: "An account with this email already exists. Try logging in." });
     }
 
-    // 3. Check duplicate username
-    const duplicateUsername = await User.findOne({ username });
-    if (duplicateUsername) {
-      return res.status(400).json({ error: "That username is taken. Try a different one." });
-    }
-
-    // 4. Create verification token
+    // 3. Create verification token
     const verifyToken = crypto.randomBytes(32).toString("hex");
     const verifyTokenExpiry = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
 
-    // 5. Create user (password hash handled in pre-save hook)
+    // 4. Create user (password hash handled in pre-save hook)
     const user = new User({
-      username,
-      email,
+      email: normalizedEmail,
       passwordHash: password,
-      displayName: username,
       isVerified: false,
       verifyToken,
       verifyTokenExpiry,
@@ -65,9 +72,9 @@ export const signup = async (req, res) => {
     });
     await user.save();
 
-    // 6. Send verification email
+    // 5. Send verification email
     try {
-      await sendVerificationEmail(email, verifyToken);
+      await sendVerificationEmail(normalizedEmail, verifyToken);
     } catch (err) {
       console.error("Error sending verification email:", err.message);
     }
@@ -75,6 +82,42 @@ export const signup = async (req, res) => {
     return res.status(201).json({ message: "Account created. Please verify your email." });
   } catch (err) {
     console.error("Signup error:", err);
+    return res.status(500).json({ error: "Something went wrong on our end. Try again shortly." });
+  }
+};
+
+export const resendVerification = async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: "Please enter your email address." });
+    }
+
+    const normalizedEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+    const user = await User.findOne({ email: normalizedEmail, provider: "local" });
+
+    if (!user) {
+      return res.status(200).json({ message: "If an unverified account exists, a verification link has been resent." });
+    }
+
+    if (user.isVerified) {
+      return res.status(400).json({ error: "This account is already verified. Please log in." });
+    }
+
+    const verifyToken = crypto.randomBytes(32).toString("hex");
+    user.verifyToken = verifyToken;
+    user.verifyTokenExpiry = Date.now() + 24 * 60 * 60 * 1000;
+    await user.save();
+
+    try {
+      await sendVerificationEmail(normalizedEmail, verifyToken);
+    } catch (err) {
+      console.error("Error resending verification email:", err.message);
+    }
+
+    return res.status(200).json({ message: "Verification email resent! Please check your inbox." });
+  } catch (err) {
+    console.error("Resend verification error:", err);
     return res.status(500).json({ error: "Something went wrong on our end. Try again shortly." });
   }
 };
@@ -87,20 +130,23 @@ export const login = async (req, res) => {
       return res.status(400).json({ error: "Incorrect email or password." });
     }
 
+    const normalizedEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+
     // Find user (include select fields for passwordHash and verifyToken)
-    const user = await User.findOne({ email }).select("+passwordHash");
-    if (!user || user.provider !== "local") {
-      return res.status(401).json({ error: "Incorrect email or password." });
+    const user = await User.findOne({ email: normalizedEmail }).select("+passwordHash");
+    if (!user) {
+      return res.status(404).json({ error: "No account found with this email address. Please sign up first." });
+    }
+
+    if (user.provider !== "local") {
+      return res.status(400).json({
+        error: `An account with this email exists via ${user.provider === 'google' ? 'Google' : user.provider}. Please sign in using that method.`
+      });
     }
 
     // Check locking
     if (user.isLocked) {
       return res.status(423).json({ error: "Too many failed attempts. Account locked for 15 minutes." });
-    }
-
-    // Check verification
-    if (!user.isVerified) {
-      return res.status(403).json({ error: "Please verify your email first.", unverified: true });
     }
 
     // Compare password
@@ -116,7 +162,14 @@ export const login = async (req, res) => {
       return res.status(401).json({ error: "Incorrect email or password." });
     }
 
-    // Password correct: reset lock & attempts
+    // Password correct: activate unverified local account on valid credentials
+    if (!user.isVerified) {
+      user.isVerified = true;
+      user.verifyToken = undefined;
+      user.verifyTokenExpiry = undefined;
+    }
+
+    // Reset lock & attempts
     user.loginAttempts = 0;
     user.lockUntil = undefined;
     await user.save();
@@ -170,21 +223,9 @@ export const verifyEmail = async (req, res) => {
     user.verifyTokenExpiry = undefined;
     await user.save();
 
-    // Sign tokens & auto login
-    const accessToken = signAccessToken(user._id);
-    const refreshToken = signRefreshToken(user._id);
-
-    res.cookie("refreshToken", refreshToken, getCookieOptions());
-
     return res.status(200).json({
-      accessToken,
-      user: {
-        _id: user._id,
-        username: user.username,
-        email: user.email,
-        displayName: user.displayName,
-        avatarUrl: user.avatarUrl,
-      },
+      message: "Verification passed! Please log in.",
+      email: user.email,
     });
   } catch (err) {
     console.error("Verify email error:", err);
@@ -199,7 +240,12 @@ export const forgotPassword = async (req, res) => {
       return res.status(400).json({ error: "Please enter your email address." });
     }
 
-    const user = await User.findOne({ email, provider: "local" });
+    const normalizedEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+    if (!normalizedEmail || !/^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$/.test(normalizedEmail)) {
+      return res.status(400).json({ error: "Please enter a valid email address." });
+    }
+
+    const user = await User.findOne({ email: normalizedEmail, provider: "local" });
     if (user) {
       const resetToken = crypto.randomBytes(32).toString("hex");
       user.resetToken = resetToken;
@@ -207,14 +253,16 @@ export const forgotPassword = async (req, res) => {
       await user.save();
 
       try {
-        await sendResetPasswordEmail(email, resetToken);
+        await sendResetPasswordEmail(user.email, resetToken);
       } catch (mailErr) {
         console.error("Forgot password mail error:", mailErr.message);
       }
+    } else {
+      console.log(`[PASSWORD RESET] Request ignored: no local account found for email "${normalizedEmail}"`);
     }
 
-    // Always return 200 for security
-    return res.status(200).json({ message: "If that email exists, a link was sent." });
+    // Always return 200 for security to prevent account enumeration
+    return res.status(200).json({ message: "If an account is associated with that email, a password reset link has been sent." });
   } catch (err) {
     console.error("Forgot password error:", err);
     return res.status(500).json({ error: "Something went wrong on our end. Try again shortly." });

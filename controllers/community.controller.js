@@ -1,14 +1,19 @@
 import Community from '../models/Community.js';
-import Space from '../models/Space.js';
-import History from '../models/History.js';
+import {
+  verifySpaceOwnership,
+  updateSpaceResourceCount,
+  logUserHistory,
+  parseTags,
+  sendError,
+} from '../utils/spaceHelpers.js';
 
 const detectPlatform = (url) => {
-  if (/discord\.(gg|com)/.test(url))     return 'discord';
-  if (/reddit\.com/.test(url))           return 'reddit';
-  if (/(twitter|x)\.com/.test(url))      return 'twitter';
-  if (/youtube\.com/.test(url))          return 'youtube';
-  if (/github\.com/.test(url))           return 'github';
-  if (/slack\.com/.test(url))            return 'slack';
+  if (/discord\.(gg|com)/.test(url)) return 'discord';
+  if (/reddit\.com/.test(url)) return 'reddit';
+  if (/(twitter|x)\.com/.test(url)) return 'twitter';
+  if (/youtube\.com/.test(url)) return 'youtube';
+  if (/github\.com/.test(url)) return 'github';
+  if (/slack\.com/.test(url)) return 'slack';
   return 'other';
 };
 
@@ -29,7 +34,7 @@ export const listCommunities = async (req, res) => {
 
     res.json({ communities, hasMore: communities.length === 20 });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to load communities' });
+    sendError(res, err, 'Failed to load communities');
   }
 };
 
@@ -39,7 +44,7 @@ export const createCommunity = async (req, res) => {
     const { name, url, platform, caption, tags = [], memberCount } = req.body;
     const { spaceId } = req.params;
 
-    const space = await Space.findOne({ _id: spaceId, owner: req.user._id });
+    const space = await verifySpaceOwnership(spaceId, req.user._id);
     if (!space) return res.status(404).json({ error: 'Space not found' });
 
     const detectedPlatform = platform || detectPlatform(url);
@@ -51,25 +56,22 @@ export const createCommunity = async (req, res) => {
       url: url.trim(),
       platform: detectedPlatform,
       caption: caption?.trim(),
-      tags: tags.map(t => t.trim().toLowerCase()),
+      tags: parseTags(tags),
       memberCount: memberCount?.trim(),
     });
 
-    await Space.findOneAndUpdate(
-      { _id: spaceId, owner: req.user._id },
-      { $inc: { communitiesCount: 1 } }
-    );
+    await updateSpaceResourceCount(spaceId, 'communitiesCount', 1);
 
-    await History.create({
-      owner: req.user._id,
-      action: 'created_community',
-      label: `Added community link "${community.name}"`,
-      meta: { spaceId, communityId: community._id }
-    });
+    await logUserHistory(
+      req.user._id,
+      'created_community',
+      `Added community link "${community.name}"`,
+      { spaceId, communityId: community._id }
+    );
 
     res.status(201).json({ community });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 };
 
@@ -82,7 +84,7 @@ export const updateCommunity = async (req, res) => {
     if (caption !== undefined)     update.caption = caption.trim();
     if (platform !== undefined)    update.platform = platform;
     if (memberCount !== undefined) update.memberCount = memberCount.trim();
-    if (tags !== undefined)        update.tags = tags.map(t => t.trim().toLowerCase());
+    if (tags !== undefined)        update.tags = parseTags(tags);
 
     if (url !== undefined) {
       update.url = url.trim();
@@ -100,7 +102,7 @@ export const updateCommunity = async (req, res) => {
 
     res.json({ community });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 };
 
@@ -113,14 +115,11 @@ export const deleteCommunity = async (req, res) => {
     });
     if (!community) return res.status(404).json({ error: 'Not found' });
 
-    await Space.findOneAndUpdate(
-      { _id: community.spaceId, owner: req.user._id, communitiesCount: { $gt: 0 } },
-      { $inc: { communitiesCount: -1 } }
-    );
+    await updateSpaceResourceCount(community.spaceId, 'communitiesCount', -1);
 
     res.json({ message: 'Deleted' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 };
 
@@ -142,6 +141,6 @@ export const searchCommunities = async (req, res) => {
 
     res.json({ communities, count: communities.length });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 };

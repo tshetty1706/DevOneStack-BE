@@ -5,6 +5,7 @@ import {
   login,
   logout,
   verifyEmail,
+  resendVerification,
   forgotPassword,
   resetPassword,
   refresh,
@@ -21,6 +22,7 @@ router.post("/signup", signupLimiter, signup);
 router.post("/login", loginLimiter, login);
 router.post("/logout", logout);
 router.get("/verify-email/:token", verifyEmail);
+router.post("/resend-verification", signupLimiter, resendVerification);
 router.post("/forgot-password", forgotPasswordLimiter, forgotPassword);
 router.post("/reset-password/:token", resetPassword);
 
@@ -29,10 +31,14 @@ router.get("/me", protectRoute, getMe);
 router.post("/refresh", refresh);
 
 // Passport Google OAuth
-router.get(
-  "/google",
-  passport.authenticate("google", { scope: ["profile", "email"], session: false })
-);
+router.get("/google", (req, res, next) => {
+  const mode = req.query.mode === "signup" ? "signup" : "login";
+  passport.authenticate("google", {
+    scope: ["profile", "email"],
+    state: mode,
+    session: false,
+  })(req, res, next);
+});
 
 router.get(
   "/google/callback",
@@ -40,12 +46,15 @@ router.get(
     const clientUrl = process.env.CLIENT_URL || process.env.FRONTEND_URL || "http://localhost:5173";
     passport.authenticate("google", {
       session: false,
-      failureRedirect: `${clientUrl}/login?error=oauth_failed`,
+      failureRedirect: `${clientUrl}/login?error=account_not_found&provider=google`,
     })(req, res, next);
   },
   async (req, res) => {
     const clientUrl = process.env.CLIENT_URL || process.env.FRONTEND_URL || "http://localhost:5173";
     try {
+      if (!req.user) {
+        return res.redirect(`${clientUrl}/login?error=account_not_found&provider=google`);
+      }
       const accessToken = signAccessToken(req.user._id);
       const refreshToken = signRefreshToken(req.user._id);
 
@@ -59,7 +68,7 @@ router.get(
       return res.redirect(`${clientUrl}/oauth/callback#token=${accessToken}`);
     } catch (err) {
       console.error("Google OAuth callback error:", err);
-      return res.redirect(`${clientUrl}/login?error=oauth_failed`);
+      return res.redirect(`${clientUrl}/login?error=account_not_found&provider=google`);
     }
   }
 );

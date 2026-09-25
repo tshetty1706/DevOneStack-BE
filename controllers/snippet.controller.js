@@ -1,9 +1,13 @@
 import Snippet from '../models/Snippet.js';
 import SnippetContent from '../models/SnippetContent.js';
-import Space from '../models/Space.js';
-import History from '../models/History.js';
-import DOMPurify from 'isomorphic-dompurify';
 import { syncPinnedItem } from '../utils/pinSync.js';
+import {
+  verifySpaceOwnership,
+  updateSpaceResourceCount,
+  logUserHistory,
+  parseTags,
+  sendError,
+} from '../utils/spaceHelpers.js';
 
 // GET /api/spaces/:spaceId/snippets
 export const listSnippets = async (req, res) => {
@@ -22,7 +26,7 @@ export const listSnippets = async (req, res) => {
 
     res.json({ snippets, hasMore: snippets.length === 20 });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to load snippets' });
+    sendError(res, err, 'Failed to load snippets');
   }
 };
 
@@ -32,7 +36,7 @@ export const createSnippet = async (req, res) => {
     const { name, caption, language, code = '', tags = [] } = req.body;
     const { spaceId } = req.params;
 
-    const space = await Space.findOne({ _id: spaceId, owner: req.user._id });
+    const space = await verifySpaceOwnership(spaceId, req.user._id);
     if (!space) return res.status(404).json({ error: 'Space not found' });
 
     const lines     = code.split('\n');
@@ -47,26 +51,22 @@ export const createSnippet = async (req, res) => {
       language: language.trim(),
       preview,
       lineCount,
-      tags: tags.map(t => t.trim().toLowerCase()),
+      tags: parseTags(tags),
     });
 
     await SnippetContent.create({ snippetId: snippet._id, code });
+    await updateSpaceResourceCount(spaceId, 'snippetsCount', 1);
 
-    await Space.findOneAndUpdate(
-      { _id: spaceId, owner: req.user._id },
-      { $inc: { snippetsCount: 1 } }
+    await logUserHistory(
+      req.user._id,
+      'created_snippet',
+      `Created snippet "${snippet.name}"`,
+      { spaceId, snippetId: snippet._id }
     );
-
-    await History.create({
-      owner: req.user._id,
-      action: 'created_snippet',
-      label: `Created snippet "${snippet.name}"`,
-      meta: { spaceId, snippetId: snippet._id }
-    });
 
     res.status(201).json({ snippet });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 };
 
@@ -79,7 +79,7 @@ export const getSnippetContent = async (req, res) => {
     const content = await SnippetContent.findOne({ snippetId: snippet._id });
     res.json({ code: content ? content.code : '' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 };
 
@@ -91,7 +91,7 @@ export const updateSnippet = async (req, res) => {
     if (name !== undefined)     update.name = name.trim();
     if (caption !== undefined)  update.caption = caption.trim();
     if (language !== undefined) update.language = language.trim();
-    if (tags !== undefined)     update.tags = tags.map(t => t.trim().toLowerCase());
+    if (tags !== undefined)     update.tags = parseTags(tags);
     if (isPinned !== undefined) update.isPinned = isPinned;
 
     const snippet = await Snippet.findOneAndUpdate(
@@ -114,7 +114,7 @@ export const updateSnippet = async (req, res) => {
 
     res.json({ snippet });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 };
 
@@ -152,7 +152,7 @@ export const updateSnippetContent = async (req, res) => {
 
     res.json({ message: 'Saved', preview, lineCount });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 };
 
@@ -165,7 +165,7 @@ export const useSnippet = async (req, res) => {
     );
     res.json({ message: 'ok' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 };
 
@@ -182,14 +182,11 @@ export const deleteSnippet = async (req, res) => {
     await syncPinnedItem(req.user._id, snippet.spaceId, snippet._id, snippet.language, false);
 
     await SnippetContent.deleteOne({ snippetId: snippet._id });
-    await Space.findOneAndUpdate(
-      { _id: snippet.spaceId, owner: req.user._id, snippetsCount: { $gt: 0 } },
-      { $inc: { snippetsCount: -1 } }
-    );
+    await updateSpaceResourceCount(snippet.spaceId, 'snippetsCount', -1);
 
     res.json({ message: 'Deleted' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 };
 
@@ -212,6 +209,6 @@ export const searchSnippets = async (req, res) => {
 
     res.json({ snippets, count: snippets.length });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 };

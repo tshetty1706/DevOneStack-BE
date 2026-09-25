@@ -1,7 +1,12 @@
 import Learning from '../models/Learning.js';
-import Space from '../models/Space.js';
-import History from '../models/History.js';
 import { syncPinnedItem } from '../utils/pinSync.js';
+import {
+  verifySpaceOwnership,
+  updateSpaceResourceCount,
+  logUserHistory,
+  parseTags,
+  sendError,
+} from '../utils/spaceHelpers.js';
 
 // GET /api/spaces/:spaceId/learnings
 export const listLearnings = async (req, res) => {
@@ -19,7 +24,7 @@ export const listLearnings = async (req, res) => {
 
     res.json({ learnings });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to load learnings' });
+    sendError(res, err, 'Failed to load learnings');
   }
 };
 
@@ -31,7 +36,7 @@ export const getLearning = async (req, res) => {
     if (!learning) return res.status(404).json({ error: 'Learning not found' });
     res.json({ learning });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 };
 
@@ -45,12 +50,8 @@ export const createLearning = async (req, res) => {
       return res.status(400).json({ error: 'Title and content are required' });
     }
 
-    const space = await Space.findOne({ _id: spaceId, owner: req.user._id });
+    const space = await verifySpaceOwnership(spaceId, req.user._id);
     if (!space) return res.status(404).json({ error: 'Space not found' });
-
-    const cleanTags = Array.isArray(tags) 
-      ? tags.map(t => t.trim().toLowerCase()).filter(Boolean) 
-      : [];
 
     const learning = await Learning.create({
       owner: req.user._id,
@@ -59,25 +60,22 @@ export const createLearning = async (req, res) => {
       type: type || 'learning',
       content: content.trim(),
       codeExample: codeExample || { language: '', code: '' },
-      tags: cleanTags,
+      tags: parseTags(tags),
       isPinned: false
     });
 
-    await Space.findOneAndUpdate(
-      { _id: spaceId, owner: req.user._id },
-      { $inc: { learningsCount: 1 } }
-    );
+    await updateSpaceResourceCount(spaceId, 'learningsCount', 1);
 
-    await History.create({
-      owner: req.user._id,
-      action: 'created_learning',
-      label: `Created ${learning.type} "${learning.title}"`,
-      meta: { spaceId, learningId: learning._id }
-    });
+    await logUserHistory(
+      req.user._id,
+      'created_learning',
+      `Created ${learning.type} "${learning.title}"`,
+      { spaceId, learningId: learning._id }
+    );
 
     res.status(201).json({ learning });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 };
 
@@ -96,11 +94,7 @@ export const updateLearning = async (req, res) => {
     if (type !== undefined) learning.type = type;
     if (content !== undefined) learning.content = content.trim();
     if (codeExample !== undefined) learning.codeExample = codeExample;
-    if (tags !== undefined) {
-      learning.tags = Array.isArray(tags) 
-        ? tags.map(t => t.trim().toLowerCase()).filter(Boolean) 
-        : [];
-    }
+    if (tags !== undefined) learning.tags = parseTags(tags);
     if (isPinned !== undefined) learning.isPinned = isPinned;
 
     await learning.save();
@@ -109,24 +103,24 @@ export const updateLearning = async (req, res) => {
     if (isPinned !== undefined && oldPinned !== isPinned) {
       await syncPinnedItem(req.user._id, learning.spaceId, learning._id, 'learning', isPinned);
       
-      await History.create({
-        owner: req.user._id,
-        action: isPinned ? 'pinned_learning' : 'unpinned_learning',
-        label: `${isPinned ? 'Pinned' : 'Unpinned'} learning "${learning.title}"`,
-        meta: { spaceId: learning.spaceId, learningId: learning._id }
-      });
+      await logUserHistory(
+        req.user._id,
+        isPinned ? 'pinned_learning' : 'unpinned_learning',
+        `${isPinned ? 'Pinned' : 'Unpinned'} learning "${learning.title}"`,
+        { spaceId: learning.spaceId, learningId: learning._id }
+      );
     } else {
-      await History.create({
-        owner: req.user._id,
-        action: 'updated_learning',
-        label: `Updated learning "${learning.title}"`,
-        meta: { spaceId: learning.spaceId, learningId: learning._id }
-      });
+      await logUserHistory(
+        req.user._id,
+        'updated_learning',
+        `Updated learning "${learning.title}"`,
+        { spaceId: learning.spaceId, learningId: learning._id }
+      );
     }
 
     res.json({ learning });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 };
 
@@ -140,22 +134,18 @@ export const deleteLearning = async (req, res) => {
 
     // Sync pin removal
     await syncPinnedItem(req.user._id, spaceId, learning._id, 'learning', false);
+    await updateSpaceResourceCount(spaceId, 'learningsCount', -1);
 
-    await Space.findOneAndUpdate(
-      { _id: spaceId, owner: req.user._id, learningsCount: { $gt: 0 } },
-      { $inc: { learningsCount: -1 } }
+    await logUserHistory(
+      req.user._id,
+      'deleted_learning',
+      `Deleted learning "${learning.title}"`,
+      { spaceId }
     );
-
-    await History.create({
-      owner: req.user._id,
-      action: 'deleted_learning',
-      label: `Deleted learning "${learning.title}"`,
-      meta: { spaceId }
-    });
 
     res.json({ message: 'Deleted successfully' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 };
 
@@ -183,6 +173,6 @@ export const searchLearnings = async (req, res) => {
 
     res.json({ learnings, count: learnings.length });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 };

@@ -1,6 +1,13 @@
 import Repo from '../models/Repo.js';
-import Space from '../models/Space.js';
-import History from '../models/History.js';
+import {
+  verifySpaceOwnership,
+  updateSpaceResourceCount,
+  logUserHistory,
+  parseTags,
+  sendError,
+} from '../utils/spaceHelpers.js';
+
+const VALID_REPO_URL = /^https?:\/\/(github|gitlab|bitbucket)\.com\/.+/;
 
 // GET /api/spaces/:spaceId/repos
 export const listRepos = async (req, res) => {
@@ -19,7 +26,7 @@ export const listRepos = async (req, res) => {
 
     res.json({ repos, hasMore: repos.length === 20 });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to load repositories' });
+    sendError(res, err, 'Failed to load repositories');
   }
 };
 
@@ -29,12 +36,11 @@ export const createRepo = async (req, res) => {
     const { name, url, caption, platform, tags = [], isOwn = false } = req.body;
     const { spaceId } = req.params;
 
-    const validRepoUrl = /^https?:\/\/(github|gitlab|bitbucket)\.com\/.+/;
-    if (!validRepoUrl.test(url)) {
+    if (!VALID_REPO_URL.test(url)) {
       return res.status(400).json({ error: 'Invalid repository URL. Must be github.com, gitlab.com or bitbucket.com' });
     }
 
-    const space = await Space.findOne({ _id: spaceId, owner: req.user._id });
+    const space = await verifySpaceOwnership(spaceId, req.user._id);
     if (!space) return res.status(404).json({ error: 'Space not found' });
 
     const repo = await Repo.create({
@@ -44,25 +50,22 @@ export const createRepo = async (req, res) => {
       url: url.trim(),
       caption: caption?.trim(),
       platform: platform || 'github',
-      tags: tags.map(t => t.trim().toLowerCase()),
+      tags: parseTags(tags),
       isOwn,
     });
 
-    await Space.findOneAndUpdate(
-      { _id: spaceId, owner: req.user._id },
-      { $inc: { reposCount: 1 } }
-    );
+    await updateSpaceResourceCount(spaceId, 'reposCount', 1);
 
-    await History.create({
-      owner: req.user._id,
-      action: 'created_repo',
-      label: `Linked repository "${repo.name}"`,
-      meta: { spaceId, repoId: repo._id }
-    });
+    await logUserHistory(
+      req.user._id,
+      'created_repo',
+      `Linked repository "${repo.name}"`,
+      { spaceId, repoId: repo._id }
+    );
 
     res.status(201).json({ repo });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 };
 
@@ -74,12 +77,11 @@ export const updateRepo = async (req, res) => {
     if (name !== undefined)    update.name = name.trim();
     if (caption !== undefined) update.caption = caption.trim();
     if (platform !== undefined) update.platform = platform;
-    if (tags !== undefined)     update.tags = tags.map(t => t.trim().toLowerCase());
+    if (tags !== undefined)     update.tags = parseTags(tags);
     if (isOwn !== undefined)   update.isOwn = isOwn;
 
     if (url !== undefined) {
-      const validRepoUrl = /^https?:\/\/(github|gitlab|bitbucket)\.com\/.+/;
-      if (!validRepoUrl.test(url)) {
+      if (!VALID_REPO_URL.test(url)) {
         return res.status(400).json({ error: 'Invalid repository URL' });
       }
       update.url = url.trim();
@@ -94,7 +96,7 @@ export const updateRepo = async (req, res) => {
 
     res.json({ repo });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 };
 
@@ -107,14 +109,11 @@ export const deleteRepo = async (req, res) => {
     });
     if (!repo) return res.status(404).json({ error: 'Not found' });
 
-    await Space.findOneAndUpdate(
-      { _id: repo.spaceId, owner: req.user._id, reposCount: { $gt: 0 } },
-      { $inc: { reposCount: -1 } }
-    );
+    await updateSpaceResourceCount(repo.spaceId, 'reposCount', -1);
 
     res.json({ message: 'Deleted' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 };
 
@@ -136,6 +135,6 @@ export const searchRepos = async (req, res) => {
 
     res.json({ repos, count: repos.length });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendError(res, err);
   }
 };
