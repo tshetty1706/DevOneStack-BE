@@ -6,6 +6,7 @@ import {
   updateSpace,
   deleteSpace,
   recountSpace,
+  toggleStarSpace,
 } from "../controllers/space.controller.js";
 import protectRoute from "../middleware/protectRoute.js";
 
@@ -19,6 +20,8 @@ router.patch("/:spaceId/recount", recountSpace);
 router.get("/:id", getSpace);
 router.post("/", createSpace);
 router.patch("/:id", updateSpace);
+router.post("/:id/star", toggleStarSpace);
 router.delete("/:id", deleteSpace);
 
 export default router;
+
