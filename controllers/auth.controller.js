@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 import { signAccessToken, signRefreshToken } from "../utils/jwt.js";
 import { sendVerificationEmail, sendResetPasswordEmail, sendResetConfirmationEmail } from "../utils/email.js";
+import { ensureUserHasUsername } from "../utils/usernameGenerator.js";
 
 // Helper to validate password strength
 const isPasswordStrong = (pwd) => {
@@ -133,7 +134,7 @@ export const login = async (req, res) => {
     const normalizedEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
 
     // Find user (include select fields for passwordHash and verifyToken)
-    const user = await User.findOne({ email: normalizedEmail }).select("+passwordHash");
+    let user = await User.findOne({ email: normalizedEmail }).select("+passwordHash");
     if (!user) {
       return res.status(404).json({ error: "No account found with this email address. Please sign up first." });
     }
@@ -174,6 +175,14 @@ export const login = async (req, res) => {
     user.lockUntil = undefined;
     await user.save();
 
+    // Ensure unique username exists for first login
+    let usernameGenerated = false;
+    if (!user.username) {
+      const usernameResult = await ensureUserHasUsername(user);
+      user = usernameResult.user;
+      usernameGenerated = usernameResult.generated;
+    }
+
     // Sign tokens
     const accessToken = signAccessToken(user._id);
     const refreshToken = signRefreshToken(user._id);
@@ -189,6 +198,7 @@ export const login = async (req, res) => {
         displayName: user.displayName,
         avatarUrl: user.avatarUrl,
       },
+      usernameGenerated,
     });
   } catch (err) {
     console.error("Login error:", err);

@@ -14,6 +14,7 @@ import {
 import protectRoute from "../middleware/protectRoute.js";
 import { loginLimiter, signupLimiter, forgotPasswordLimiter } from "../middleware/rateLimiter.js";
 import { signAccessToken, signRefreshToken } from "../utils/jwt.js";
+import { ensureUserHasUsername } from "../utils/usernameGenerator.js";
 
 const router = express.Router();
 
@@ -55,8 +56,17 @@ router.get(
       if (!req.user) {
         return res.redirect(`${clientUrl}/login?error=account_not_found&provider=google`);
       }
-      const accessToken = signAccessToken(req.user._id);
-      const refreshToken = signRefreshToken(req.user._id);
+
+      let usernameGenerated = false;
+      let user = req.user;
+      if (!user.username) {
+        const result = await ensureUserHasUsername(user);
+        user = result.user;
+        usernameGenerated = result.generated;
+      }
+
+      const accessToken = signAccessToken(user._id);
+      const refreshToken = signRefreshToken(user._id);
 
       res.cookie("refreshToken", refreshToken, {
         httpOnly: true,
@@ -65,7 +75,7 @@ router.get(
         maxAge: 7 * 24 * 60 * 60 * 1000,
       });
 
-      return res.redirect(`${clientUrl}/oauth/callback#token=${accessToken}`);
+      return res.redirect(`${clientUrl}/oauth/callback#token=${accessToken}&usernameGenerated=${usernameGenerated}`);
     } catch (err) {
       console.error("Google OAuth callback error:", err);
       return res.redirect(`${clientUrl}/login?error=account_not_found&provider=google`);
