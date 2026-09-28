@@ -13,27 +13,33 @@ export const getAllPinned = async (req, res) => {
       Learning.find({ owner, isPinned: true })
         .select('title type content tags spaceId codeExample updatedAt')
         .populate('spaceId', 'name')
-        .limit(10),
+        .limit(10)
+        .lean(),
       Snippet.find({ owner, isPinned: true })
         .select('name caption language preview tags spaceId usedCount')
         .populate('spaceId', 'name')
-        .limit(10),
+        .limit(10)
+        .lean(),
       Doc.find({ owner, isPinned: true })
         .select('title type url cloudinaryPublicId caption tags spaceId')
         .populate('spaceId', 'name')
-        .limit(10),
+        .limit(10)
+        .lean(),
       Repo.find({ owner, isPinned: true })
         .select('name url caption platform tags spaceId isOwn')
         .populate('spaceId', 'name')
-        .limit(10),
+        .limit(10)
+        .lean(),
       Prompt.find({ owner, isPinned: true })
         .select('title body caption model tags spaceId usedCount')
         .populate('spaceId', 'name')
-        .limit(10),
+        .limit(10)
+        .lean(),
       Community.find({ owner, isPinned: true })
         .select('name url platform caption tags spaceId')
         .populate('spaceId', 'name')
-        .limit(10),
+        .limit(10)
+        .lean(),
     ]);
 
     const total = learnings.length + snippets.length + docs.length +

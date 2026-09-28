@@ -45,9 +45,22 @@ router.get(
   "/google/callback",
   (req, res, next) => {
     const clientUrl = process.env.CLIENT_URL || process.env.FRONTEND_URL || "http://localhost:5173";
-    passport.authenticate("google", {
-      session: false,
-      failureRedirect: `${clientUrl}/login?error=account_not_found&provider=google`,
+    passport.authenticate("google", { session: false }, (err, user, info) => {
+      if (err) {
+        console.error("Google OAuth error:", err);
+        return res.redirect(`${clientUrl}/login?error=oauth_failed`);
+      }
+      if (!user) {
+        if (info?.message === "account_exists_local") {
+          return res.redirect(`${clientUrl}/login?error=account_exists&provider=local`);
+        }
+        if (info?.message === "account_not_found") {
+          return res.redirect(`${clientUrl}/login?error=account_not_found&provider=google`);
+        }
+        return res.redirect(`${clientUrl}/login?error=oauth_failed`);
+      }
+      req.user = user;
+      next();
     })(req, res, next);
   },
   async (req, res) => {

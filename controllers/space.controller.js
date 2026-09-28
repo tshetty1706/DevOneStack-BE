@@ -8,6 +8,7 @@ import Repo from "../models/Repo.js";
 import Prompt from "../models/Prompt.js";
 import Community from "../models/Community.js";
 import deleteFromCloudinary from "../utils/deleteFromCloudinary.js";
+import uploadToCloudinary from "../utils/uploadToCloudinary.js";
 import { getIconKeyByName } from "../utils/iconMapping.js";
 
 export const getSpaces = async (req, res) => {
@@ -41,7 +42,8 @@ export const getSpaces = async (req, res) => {
 
     const spaces = await Space.find(query)
       .populate('owner', 'username displayName avatarUrl')
-      .sort({ isPinned: -1, updatedAt: -1 });
+      .sort({ isPinned: -1, updatedAt: -1 })
+      .lean();
 
     return res.json(spaces);
   } catch (err) {
@@ -60,7 +62,7 @@ export const getSpace = async (req, res) => {
         { owner: req.user._id },
         { visibility: { $in: ['public', 'unlisted'] } }
       ]
-    }).populate('owner', 'username displayName avatarUrl');
+    }).populate('owner', 'username displayName avatarUrl').lean();
 
     if (!space) {
       return res.status(404).json({ error: "Space not found" });
@@ -336,5 +338,57 @@ export const recountSpace = async (req, res) => {
   } catch (err) {
     console.error("recountSpace error:", err);
     return res.status(500).json({ error: err.message });
+  }
+};
+
+// POST /api/spaces/upload-thumbnail
+export const uploadSpaceThumbnail = async (req, res) => {
+  try {
+    const file = req.file;
+    if (!file) {
+      return res.status(400).json({ error: "Please select an image file to upload." });
+    }
+
+    const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+    if (!allowedMimeTypes.includes(file.mimetype)) {
+      return res.status(400).json({ error: "Only image files (JPEG, PNG, WEBP, GIF) are supported." });
+    }
+
+    // Limit thumbnail to max 10MB
+    if (file.size > 10 * 1024 * 1024) {
+      return res.status(400).json({ error: "Thumbnail file size cannot exceed 10MB." });
+    }
+
+    const rawName = file.originalname || 'thumbnail';
+    const lastDot = rawName.lastIndexOf('.');
+    const baseName = lastDot > 0 ? rawName.substring(0, lastDot) : rawName;
+    const cleanOrigName = baseName.replace(/[^a-zA-Z0-9]/g, '_');
+    const customPublicId = `thumb-${cleanOrigName}-${Date.now()}`;
+
+    let cloudinaryResult;
+    try {
+      cloudinaryResult = await uploadToCloudinary(file.buffer, {
+        folder: `devonestack/thumbnails/${req.user._id}`,
+        public_id: customPublicId,
+        resource_type: 'image',
+        type: 'upload',
+        access_mode: 'public',
+      });
+    } catch (uploadErr) {
+      console.error("Cloudinary thumbnail upload failed:", uploadErr);
+      return res.status(500).json({ error: "Unable to upload thumbnail. Please try again." });
+    }
+
+    return res.status(200).json({
+      url: cloudinaryResult.secure_url || cloudinaryResult.url,
+      publicId: cloudinaryResult.public_id,
+      width: cloudinaryResult.width,
+      height: cloudinaryResult.height,
+      format: cloudinaryResult.format,
+      bytes: cloudinaryResult.bytes,
+    });
+  } catch (err) {
+    console.error("uploadSpaceThumbnail error:", err);
+    return res.status(500).json({ error: "Unable to upload thumbnail. Please try again." });
   }
 };

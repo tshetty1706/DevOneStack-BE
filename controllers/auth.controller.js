@@ -139,7 +139,7 @@ export const login = async (req, res) => {
       return res.status(404).json({ error: "No account found with this email address. Please sign up first." });
     }
 
-    if (user.provider !== "local") {
+    if (user.provider !== "local" || !user.passwordHash) {
       return res.status(400).json({
         error: `An account with this email exists via ${user.provider === 'google' ? 'Google' : user.provider}. Please sign in using that method.`
       });

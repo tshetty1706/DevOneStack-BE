@@ -19,7 +19,8 @@ export default async (req, res, next) => {
   }
 
   const user = await User.findById(decoded.userId)
-    .select('-passwordHash -verifyToken -resetToken -verifyTokenExpiry -resetTokenExpiry');
+    .select('-passwordHash -verifyToken -resetToken -verifyTokenExpiry -resetTokenExpiry')
+    .lean();
   if (!user) {
     return res.status(401).json({ error: 'User no longer exists' });
   }

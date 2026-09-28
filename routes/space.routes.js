@@ -7,8 +7,10 @@ import {
   deleteSpace,
   recountSpace,
   toggleStarSpace,
+  uploadSpaceThumbnail,
 } from "../controllers/space.controller.js";
 import protectRoute from "../middleware/protectRoute.js";
+import upload from "../config/multer.js";
 
 const router = express.Router();
 
@@ -16,6 +18,7 @@ const router = express.Router();
 router.use(protectRoute);
 
 router.get("/", getSpaces);
+router.post("/upload-thumbnail", upload.single("thumbnail"), uploadSpaceThumbnail);
 router.patch("/:spaceId/recount", recountSpace);
 router.get("/:id", getSpace);
 router.post("/", createSpace);

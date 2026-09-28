@@ -1,7 +1,7 @@
 export const ICON_MAPPING = {
   // Brand Technology Logos (Simple Icons)
   react: { slug: 'simple-icons:react', name: 'React', keywords: ['react', 'native', 'jsx', 'tsx'] },
-  vue: { slug: 'simple-icons:vue', name: 'Vue.js', keywords: ['vue', 'vuejs'] },
+  vue: { slug: 'devicon:vuejs', name: 'Vue.js', keywords: ['vue', 'vuejs'] },
   angular: { slug: 'simple-icons:angular', name: 'Angular', keywords: ['angular', 'angularjs'] },
   svelte: { slug: 'simple-icons:svelte', name: 'Svelte', keywords: ['svelte'] },
   nodedotjs: { slug: 'simple-icons:nodedotjs', name: 'Node.js', keywords: ['node', 'nodejs', 'nodedotjs'] },
@@ -16,7 +16,7 @@ export const ICON_MAPPING = {
   supabase: { slug: 'simple-icons:supabase', name: 'Supabase', keywords: ['supabase'] },
   docker: { slug: 'simple-icons:docker', name: 'Docker', keywords: ['docker'] },
   kubernetes: { slug: 'simple-icons:kubernetes', name: 'Kubernetes', keywords: ['k8s', 'kube', 'kubernetes'] },
-  aws: { slug: 'simple-icons:amazonwebservices', name: 'AWS', keywords: ['aws', 'amazon', 's3', 'ec2'] },
+  aws: { slug: 'logos:aws', name: 'AWS', keywords: ['aws', 'amazon', 's3', 'ec2'] },
   googlecloud: { slug: 'simple-icons:googlecloud', name: 'Google Cloud', keywords: ['gcp', 'google cloud', 'googlecloud'] },
   microsoftazure: { slug: 'simple-icons:microsoftazure', name: 'Azure', keywords: ['azure', 'microsoftazure', 'microsoft azure'] },
   python: { slug: 'simple-icons:python', name: 'Python', keywords: ['python', 'py'] },
@@ -30,8 +30,8 @@ export const ICON_MAPPING = {
   go: { slug: 'simple-icons:go', name: 'Go', keywords: ['go', 'golang'] },
   rust: { slug: 'simple-icons:rust', name: 'Rust', keywords: ['rust'] },
   cplusplus: { slug: 'simple-icons:cplusplus', name: 'C++', keywords: ['c++', 'cpp', 'cplusplus'] },
-  csharp: { slug: 'simple-icons:csharp', name: 'C#', keywords: ['c#', 'csharp'] },
-  java: { slug: 'simple-icons:java', name: 'Java', keywords: ['java'] },
+  csharp: { slug: 'devicon:csharp', name: 'C#', keywords: ['c#', 'csharp'] },
+  java: { slug: 'devicon:java', name: 'Java', keywords: ['java'] },
   php: { slug: 'simple-icons:php', name: 'PHP', keywords: ['php'] },
   ruby: { slug: 'simple-icons:ruby', name: 'Ruby', keywords: ['ruby'] },
   rubyonrails: { slug: 'simple-icons:rubyonrails', name: 'Ruby on Rails', keywords: ['rails', 'rubyonrails'] },
@@ -110,12 +110,12 @@ export const ICON_MAPPING = {
   pinecone: { slug: 'simple-icons:pinecone', name: 'Pinecone', keywords: ['pinecone'] },
 
   // General Developer Concepts (Lucide Icons)
-  systemdesign: { slug: 'lucide:git-network', name: 'System Design', keywords: ['system design', 'system-design', 'architecture', 'network', 'distributed'] },
+  systemdesign: { slug: 'lucide:network', name: 'System Design', keywords: ['system design', 'system-design', 'architecture', 'network', 'distributed'] },
   interviewprep: { slug: 'lucide:brain-circuit', name: 'Interview Prep', keywords: ['interview', 'prep', 'career', 'job', 'hr', 'practice'] },
   ai: { slug: 'lucide:sparkles', name: 'AI / Machine Learning', keywords: ['ai', 'artificial intelligence', 'ml', 'neural', 'deep learning'] },
   personalnotes: { slug: 'lucide:notebook', name: 'Personal Notes', keywords: ['notes', 'personal', 'diary', 'journal', 'book', 'writing', 'todo'] },
   database: { slug: 'lucide:database', name: 'Database', keywords: ['database', 'db', 'sql', 'nosql', 'storage'] },
-  api: { slug: 'lucide:api', name: 'API / Integration', keywords: ['api', 'endpoints', 'rest', 'restful', 'webhook'] },
+  api: { slug: 'lucide:webhook', name: 'API / Integration', keywords: ['api', 'endpoints', 'rest', 'restful', 'webhook'] },
   testing: { slug: 'lucide:test-tube', name: 'Testing', keywords: ['test', 'testing', 'unit test', 'qa', 'coverage'] },
   security: { slug: 'lucide:shield-check', name: 'Security', keywords: ['security', 'auth', 'cyber', 'cryptography', 'shield'] },
   devops: { slug: 'lucide:infinity', name: 'DevOps / CI-CD', keywords: ['devops', 'cicd', 'pipeline', 'deployment', 'workflow'] }
