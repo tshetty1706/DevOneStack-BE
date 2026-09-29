@@ -76,7 +76,7 @@ export const getSpace = async (req, res) => {
 
 export const createSpace = async (req, res) => {
   try {
-    const { name, description, tool, thumbnail, visibility, tags, iconKey } = req.body;
+    const { name, description, tool, thumbnail, visibility, tags, iconKey, template, enabledModules, readme } = req.body;
     
     const trimmedName = (name || '').trim();
     if (!trimmedName) {
@@ -105,6 +105,15 @@ export const createSpace = async (req, res) => {
       parsedTags = tags.split(',').map(t => t.trim()).filter(Boolean);
     }
 
+    // Parse enabledModules: Explorer is ALWAYS first and fixed
+    let finalModules = ['explorer'];
+    if (Array.isArray(enabledModules) && enabledModules.length > 0) {
+      const sanitized = enabledModules.map(m => typeof m === 'string' ? m.trim().toLowerCase() : '').filter(Boolean);
+      finalModules = ['explorer', ...sanitized.filter(m => m !== 'explorer')];
+    } else {
+      finalModules = ['explorer', 'learnings', 'snippets', 'docs'];
+    }
+
     const space = await Space.create({
       owner: req.user._id,
       name: trimmedName,
@@ -115,6 +124,9 @@ export const createSpace = async (req, res) => {
       icon: finalIconKey, // legacy support
       iconKey: finalIconKey,
       tags: parsedTags,
+      template: (template || 'blank').trim(),
+      enabledModules: finalModules,
+      readme: typeof readme === 'string' ? readme : '',
       starsCount: 0,
       viewsCount: 0,
       sharesCount: 0,
@@ -149,7 +161,7 @@ export const createSpace = async (req, res) => {
 export const updateSpace = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, description, tool, thumbnail, visibility, tags, iconKey, isPinned, isArchived } = req.body;
+    const { name, description, tool, thumbnail, visibility, tags, iconKey, isPinned, isArchived, template, enabledModules, readme } = req.body;
     const update = {};
 
     if (name !== undefined) {
@@ -174,6 +186,18 @@ export const updateSpace = async (req, res) => {
     }
     if (isArchived !== undefined) {
       update.isArchived = Boolean(isArchived);
+    }
+    if (template !== undefined) {
+      update.template = typeof template === 'string' ? template.trim() : 'blank';
+    }
+    if (enabledModules !== undefined) {
+      const sanitized = Array.isArray(enabledModules)
+        ? enabledModules.map(m => typeof m === 'string' ? m.trim().toLowerCase() : '').filter(Boolean)
+        : [];
+      update.enabledModules = ['explorer', ...sanitized.filter(m => m !== 'explorer')];
+    }
+    if (readme !== undefined) {
+      update.readme = typeof readme === 'string' ? readme : '';
     }
 
     if (iconKey !== undefined) {
