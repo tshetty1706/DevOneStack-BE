@@ -125,8 +125,10 @@ export const createFolder = async (req, res) => {
       const parentInHierarchy = hierarchy.find(f => f._id === parentId.toString());
       depth = parentInHierarchy ? parentInHierarchy.depth + 1 : 2;
 
-      if (depth >= 4) {
-        warning = 'Nesting depth is 4+ levels deep. Consider using tags for faster navigation.';
+      if (depth > 4) {
+        return res.status(400).json({
+          error: 'Maximum folder depth is 4 levels. Suggest using tags or search instead for deeper organization.'
+        });
       }
     }
 
