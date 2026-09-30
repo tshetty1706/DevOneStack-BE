@@ -18,6 +18,8 @@ import promptRoutes from "./routes/prompt.routes.js";
 import communityRoutes from "./routes/community.routes.js";
 import tagRoutes from "./routes/tag.routes.js";
 import dashboardRoutes from "./routes/dashboard.routes.js";
+import folderRoutes from "./routes/folder.routes.js";
+import itemRoutes from "./routes/item.routes.js";
 
 dotenv.config();
 
@@ -50,6 +52,8 @@ app.use("/api/boilerplates", boilerplateRoutes);
 app.use("/api/spaces", spaceRoutes);
 app.use("/api/history", historyRoutes);
 app.use("/api/dashboard", dashboardRoutes);
+app.use("/api/spaces/:spaceId/folders", folderRoutes);
+app.use("/api/spaces/:spaceId/items", itemRoutes);
 app.use("/api/spaces/:spaceId/docs", docRoutes);
 app.use("/api/spaces/:spaceId/learnings", learningRoutes);
 app.use("/api/spaces/:spaceId/snippets", snippetRoutes);

@@ -7,9 +7,12 @@ import Doc from "../models/Doc.js";
 import Repo from "../models/Repo.js";
 import Prompt from "../models/Prompt.js";
 import Community from "../models/Community.js";
+import Folder from "../models/Folder.js";
+import Item from "../models/Item.js";
 import deleteFromCloudinary from "../utils/deleteFromCloudinary.js";
 import uploadToCloudinary from "../utils/uploadToCloudinary.js";
 import { getIconKeyByName } from "../utils/iconMapping.js";
+import { logUserHistory } from "../utils/spaceHelpers.js";
 
 export const getSpaces = async (req, res) => {
   try {
@@ -105,13 +108,13 @@ export const createSpace = async (req, res) => {
       parsedTags = tags.split(',').map(t => t.trim()).filter(Boolean);
     }
 
-    // Parse enabledModules: Explorer is ALWAYS first and fixed
-    let finalModules = ['explorer'];
+    // Parse enabledModules: Overview and Explorer are ALWAYS first and fixed
+    let finalModules = ['overview', 'explorer'];
     if (Array.isArray(enabledModules) && enabledModules.length > 0) {
       const sanitized = enabledModules.map(m => typeof m === 'string' ? m.trim().toLowerCase() : '').filter(Boolean);
-      finalModules = ['explorer', ...sanitized.filter(m => m !== 'explorer')];
+      finalModules = ['overview', 'explorer', ...sanitized.filter(m => m !== 'overview' && m !== 'explorer')];
     } else {
-      finalModules = ['explorer', 'learnings', 'snippets', 'docs'];
+      finalModules = ['overview', 'explorer', 'notes', 'learnings', 'snippets', 'docs'];
     }
 
     const space = await Space.create({
@@ -194,7 +197,7 @@ export const updateSpace = async (req, res) => {
       const sanitized = Array.isArray(enabledModules)
         ? enabledModules.map(m => typeof m === 'string' ? m.trim().toLowerCase() : '').filter(Boolean)
         : [];
-      update.enabledModules = ['explorer', ...sanitized.filter(m => m !== 'explorer')];
+      update.enabledModules = ['overview', 'explorer', ...sanitized.filter(m => m !== 'overview' && m !== 'explorer')];
     }
     if (readme !== undefined) {
       update.readme = typeof readme === 'string' ? readme : '';
@@ -223,6 +226,14 @@ export const updateSpace = async (req, res) => {
 
     if (!space) {
       return res.status(404).json({ error: "Space not found" });
+    }
+
+    if (readme !== undefined) {
+      await logUserHistory(req.user._id, 'updated_readme', `Updated Space README`, { spaceId: id });
+    } else if (visibility !== undefined) {
+      await logUserHistory(req.user._id, 'updated_visibility', `Changed visibility to ${visibility}`, { spaceId: id });
+    } else {
+      await logUserHistory(req.user._id, 'updated_space', `Updated Space "${space.name}"`, { spaceId: id });
     }
 
     return res.json(space);
@@ -298,6 +309,8 @@ export const deleteSpace = async (req, res) => {
 
     // Delete everything in parallel
     await Promise.all([
+      Folder.deleteMany({ spaceId }),
+      Item.deleteMany({ spaceId }),
       Learning.deleteMany({ spaceId }),
       Snippet.deleteMany({ spaceId }),
       SnippetContent.deleteMany({ snippetId: { $in: snippets.map(s => s._id) } }),
@@ -334,13 +347,14 @@ export const recountSpace = async (req, res) => {
     const space = await Space.findOne({ _id: spaceId, owner });
     if (!space) return res.status(404).json({ error: 'Not found' });
 
-    const [docsCount, learningsCount, snippetsCount, reposCount, promptsCount, communitiesCount] =
+    const [docsCount, notesCount, learningsCount, snippetsCount, reposCount, promptsCount, communitiesCount] =
       await Promise.all([
-        Doc.countDocuments({ spaceId, owner }),
-        Learning.countDocuments({ spaceId, owner }),
-        Snippet.countDocuments({ spaceId, owner }),
-        Repo.countDocuments({ spaceId, owner }),
-        Prompt.countDocuments({ spaceId, owner }),
+        Item.countDocuments({ spaceId, type: 'doc' }),
+        Item.countDocuments({ spaceId, type: 'note' }),
+        Item.countDocuments({ spaceId, type: 'learning' }),
+        Item.countDocuments({ spaceId, type: 'snippet' }),
+        Item.countDocuments({ spaceId, type: 'repo' }),
+        Item.countDocuments({ spaceId, type: 'prompt' }),
         Community.countDocuments({ spaceId, owner }),
       ]);
 
@@ -348,7 +362,7 @@ export const recountSpace = async (req, res) => {
       { _id: spaceId, owner },
       { 
         $set: { 
-          docsCount, learningsCount, snippetsCount, reposCount, promptsCount, communitiesCount,
+          docsCount, notesCount, learningsCount, snippetsCount, reposCount, promptsCount, communitiesCount,
           updatedAt: new Date()
         } 
       },
@@ -357,7 +371,7 @@ export const recountSpace = async (req, res) => {
 
     return res.json({
       message: 'Counts repaired',
-      counts: { docsCount, learningsCount, snippetsCount, reposCount, promptsCount, communitiesCount }
+      counts: { docsCount, notesCount, learningsCount, snippetsCount, reposCount, promptsCount, communitiesCount }
     });
   } catch (err) {
     console.error("recountSpace error:", err);

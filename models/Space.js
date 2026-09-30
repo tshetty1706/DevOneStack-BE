@@ -21,10 +21,12 @@ const SpaceSchema = new mongoose.Schema({
   readme:           { type: String, default: '' },
   progress:         { type: Number, default: 0, min: 0, max: 100 },
   docsCount:        { type: Number, default: 0, min: 0 },
+  notesCount:       { type: Number, default: 0, min: 0 },
   learningsCount:   { type: Number, default: 0, min: 0 },
   snippetsCount:    { type: Number, default: 0, min: 0 },
   reposCount:       { type: Number, default: 0, min: 0 },
   promptsCount:     { type: Number, default: 0, min: 0 },
+  imagesCount:      { type: Number, default: 0, min: 0 },
   communitiesCount: { type: Number, default: 0, min: 0 },
   isPinned:         { type: Boolean, default: false },
   isArchived:       { type: Boolean, default: false }
