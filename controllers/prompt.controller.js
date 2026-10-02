@@ -32,7 +32,7 @@ export const listPrompts = async (req, res) => {
 // POST /api/spaces/:spaceId/prompts
 export const createPrompt = async (req, res) => {
   try {
-    const { title, body, caption, tags = [], model } = req.body;
+    const { title, body, caption, tags = [], model, folderId } = req.body;
     const { spaceId } = req.params;
 
     if (!body) return res.status(400).json({ error: 'Prompt body is required' });
@@ -45,7 +45,8 @@ export const createPrompt = async (req, res) => {
     const prompt = await Prompt.create({
       owner: req.user._id,
       spaceId,
-      title: title.trim(),
+      folderId: folderId || null,
+      title: title ? title.trim() : 'Untitled Prompt',
       body: cleanBody,
       caption: caption?.trim(),
       tags: parseTags(tags),

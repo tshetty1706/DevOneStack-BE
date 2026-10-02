@@ -10,8 +10,11 @@ import {
   resetPassword,
   refresh,
   getMe,
+  updateProfile,
+  uploadAvatar,
 } from "../controllers/auth.controller.js";
 import protectRoute from "../middleware/protectRoute.js";
+import upload from "../config/multer.js";
 import { loginLimiter, signupLimiter, forgotPasswordLimiter } from "../middleware/rateLimiter.js";
 import { signAccessToken, signRefreshToken } from "../utils/jwt.js";
 import { ensureUserHasUsername } from "../utils/usernameGenerator.js";
@@ -29,6 +32,8 @@ router.post("/reset-password/:token", resetPassword);
 
 // Session Verification & Refresh
 router.get("/me", protectRoute, getMe);
+router.put("/profile", protectRoute, updateProfile);
+router.post("/avatar", protectRoute, upload.single("avatar"), uploadAvatar);
 router.post("/refresh", refresh);
 
 // Passport Google OAuth

@@ -36,7 +36,7 @@ export const listDocs = async (req, res) => {
 // POST /api/spaces/:spaceId/docs/url
 export const addUrlDoc = async (req, res) => {
   try {
-    const { title, url, caption, tags } = req.body;
+    const { title, url, caption, tags, folderId } = req.body;
     const { spaceId } = req.params;
 
     const space = await verifySpaceOwnership(spaceId, req.user._id);
@@ -45,6 +45,7 @@ export const addUrlDoc = async (req, res) => {
     const doc = await Doc.create({
       owner:   req.user._id,
       spaceId,
+      folderId: folderId || null,
       title:   title.trim(),
       type:    'url',
       url:     url.trim(),
@@ -71,7 +72,7 @@ export const addUrlDoc = async (req, res) => {
 export const uploadDoc = async (req, res) => {
   try {
     const { spaceId } = req.params;
-    const { title, caption, tags, isAttachment } = req.body;
+    const { title, caption, tags, isAttachment, folderId } = req.body;
     const file = req.file;
 
     if (!file) return res.status(400).json({ error: 'No file provided' });
@@ -112,6 +113,7 @@ export const uploadDoc = async (req, res) => {
     const doc = await Doc.create({
       owner:              req.user._id,
       spaceId,
+      folderId:           folderId || null,
       title:              title?.trim() || file.originalname,
       type:               isPdf ? 'pdf' : 'image',
       cloudinaryPublicId: cloudinaryResult.public_id,

@@ -1,6 +1,7 @@
 import Folder from '../models/Folder.js';
 import Item from '../models/Item.js';
 import Space from '../models/Space.js';
+import deleteFromCloudinary from '../utils/deleteFromCloudinary.js';
 import {
   verifySpaceOwnership,
   logUserHistory,
@@ -61,19 +62,7 @@ export const listFolders = async (req, res) => {
 
     if (!space) return res.status(404).json({ error: 'Space not found' });
 
-    let rawFolders = await Folder.find({ spaceId }).sort({ name: 1 }).lean();
-
-    // Auto-create a default workspace folder if space has 0 folders
-    if (rawFolders.length === 0 && space.owner.toString() === req.user._id.toString()) {
-      const defaultFolder = await Folder.create({
-        owner: req.user._id,
-        spaceId,
-        name: 'Workspace',
-        parentId: null,
-      });
-      rawFolders = [defaultFolder.toObject()];
-    }
-
+    const rawFolders = await Folder.find({ spaceId }).sort({ createdAt: 1 }).lean();
     const foldersWithPaths = buildFolderHierarchy(rawFolders);
 
     // Get item counts per folder
@@ -90,7 +79,9 @@ export const listFolders = async (req, res) => {
     const result = foldersWithPaths.map(f => ({
       ...f,
       itemCount: countsMap.get(f._id) || 0
-    })).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+    })).sort((a, b) => {
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    });
 
     res.json({ folders: result });
   } catch (err) {
@@ -114,15 +105,16 @@ export const createFolder = async (req, res) => {
 
     let depth = 1;
     let warning = null;
+    const actualParentId = parentId ? parentId.toString() : null;
 
-    if (parentId) {
-      const parent = await Folder.findOne({ _id: parentId, spaceId });
+    if (actualParentId) {
+      const parent = await Folder.findOne({ _id: actualParentId, spaceId });
       if (!parent) return res.status(400).json({ error: 'Parent folder not found' });
 
       // Compute depth
       const allFolders = await Folder.find({ spaceId }).lean();
       const hierarchy = buildFolderHierarchy(allFolders);
-      const parentInHierarchy = hierarchy.find(f => f._id === parentId.toString());
+      const parentInHierarchy = hierarchy.find(f => f._id === actualParentId);
       depth = parentInHierarchy ? parentInHierarchy.depth + 1 : 2;
 
       if (depth > 4) {
@@ -136,8 +128,9 @@ export const createFolder = async (req, res) => {
       owner: req.user._id,
       spaceId,
       name: trimmedName,
-      parentId: parentId || null,
+      parentId: actualParentId,
       color: color || '',
+      isRoot: false,
     });
 
     await logUserHistory(
@@ -169,6 +162,8 @@ export const updateFolder = async (req, res) => {
     const folder = await Folder.findOne({ _id: folderId, spaceId });
     if (!folder) return res.status(404).json({ error: 'Folder not found' });
 
+    const isRoot = folder.isRoot || (!folder.parentId && folder.name === 'Workspace');
+
     if (name !== undefined) {
       const trimmed = name.trim();
       if (!trimmed) return res.status(400).json({ error: 'Folder name cannot be empty' });
@@ -179,7 +174,7 @@ export const updateFolder = async (req, res) => {
       if (parentId === folderId) {
         return res.status(400).json({ error: 'A folder cannot be its own parent' });
       }
-      folder.parentId = parentId || null;
+      folder.parentId = parentId ? parentId.toString() : null;
     }
 
     if (color !== undefined) {
@@ -229,17 +224,38 @@ export const deleteFolder = async (req, res) => {
 
     const folderIdsArray = Array.from(toDeleteIds);
 
-    // Delete all items in these folders
-    const itemsToDelete = await Item.find({ spaceId, folderId: { $in: folderIdsArray } });
-    
-    // Decrement space counts accordingly
+    // Find all items in these folders
+    const itemsToDelete = await Item.find({ spaceId, folderId: { $in: folderIdsArray } }).lean();
+
+    // Asynchronously delete Cloudinary files if any
+    const cloudinaryItems = itemsToDelete.filter(i => i.cloudinaryPublicId);
+    if (cloudinaryItems.length > 0) {
+      Promise.allSettled(
+        cloudinaryItems.map(i =>
+          deleteFromCloudinary(i.cloudinaryPublicId, i.docType === 'pdf' ? 'raw' : 'image')
+        )
+      ).catch(err => console.error('Cloudinary asset deletion error:', err));
+    }
+
+    // Decrement space resource counts in bulk
+    const countsByType = {};
     for (const itm of itemsToDelete) {
-      const countField = `${itm.type}sCount`;
+      countsByType[itm.type] = (countsByType[itm.type] || 0) + 1;
+    }
+
+    const spaceInc = {};
+    for (const [type, count] of Object.entries(countsByType)) {
+      const countField = `${type}sCount`;
       if (space[countField] !== undefined) {
-        await Space.findByIdAndUpdate(spaceId, { $inc: { [countField]: -1 } });
+        spaceInc[countField] = -count;
       }
     }
 
+    if (Object.keys(spaceInc).length > 0) {
+      await Space.findByIdAndUpdate(spaceId, { $inc: spaceInc });
+    }
+
+    // Delete all items and folders in the subtree
     await Item.deleteMany({ spaceId, folderId: { $in: folderIdsArray } });
     await Folder.deleteMany({ spaceId, _id: { $in: folderIdsArray } });
 
@@ -250,7 +266,12 @@ export const deleteFolder = async (req, res) => {
       { spaceId }
     );
 
-    res.json({ message: 'Folder and contents deleted successfully', deletedFolderIds: folderIdsArray });
+    res.json({
+      message: 'Folder and contents deleted successfully',
+      deletedFolderIds: folderIdsArray,
+      deletedCount: itemsToDelete.length,
+      subfoldersCount: Math.max(0, folderIdsArray.length - 1)
+    });
   } catch (err) {
     sendError(res, err, 'Failed to delete folder');
   }

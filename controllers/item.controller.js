@@ -58,25 +58,13 @@ async function autoMigrateLegacyItems(spaceId, ownerId) {
     const itemCount = await Item.countDocuments({ spaceId });
     if (itemCount > 0) return;
 
-    let defaultFolder = await Folder.findOne({ spaceId });
-    if (!defaultFolder) {
-      defaultFolder = await Folder.create({
-        owner: ownerId,
-        spaceId,
-        name: 'Workspace',
-        parentId: null
-      });
-    }
-
-    const folderId = defaultFolder._id;
-
     // Migrate Docs
     const docs = await Doc.find({ spaceId }).lean();
     for (const d of docs) {
       await Item.create({
         owner: ownerId,
         spaceId,
-        folderId,
+        folderId: d.folderId || null,
         title: d.title || 'Untitled Doc',
         type: d.type === 'image' ? 'image' : 'doc',
         docType: d.type || 'url',
@@ -100,7 +88,7 @@ async function autoMigrateLegacyItems(spaceId, ownerId) {
       await Item.create({
         owner: ownerId,
         spaceId,
-        folderId,
+        folderId: s.folderId || null,
         title: s.name || 'Untitled Snippet',
         type: 'snippet',
         content: contentDoc?.code || '',
@@ -120,7 +108,7 @@ async function autoMigrateLegacyItems(spaceId, ownerId) {
       await Item.create({
         owner: ownerId,
         spaceId,
-        folderId,
+        folderId: l.folderId || null,
         title: l.title || 'Untitled Learning',
         type: 'learning',
         learningType: l.type || 'learning',
@@ -139,7 +127,7 @@ async function autoMigrateLegacyItems(spaceId, ownerId) {
       await Item.create({
         owner: ownerId,
         spaceId,
-        folderId,
+        folderId: p.folderId || null,
         title: p.title || 'Untitled Prompt',
         type: 'prompt',
         content: p.body || '',
@@ -158,7 +146,7 @@ async function autoMigrateLegacyItems(spaceId, ownerId) {
       await Item.create({
         owner: ownerId,
         spaceId,
-        folderId,
+        folderId: r.folderId || null,
         title: r.name || 'Untitled Repo',
         type: 'repo',
         url: r.url || '',
@@ -227,9 +215,9 @@ export const listItems = async (req, res) => {
       const folderInfo = itm.folderId ? pathMap.get(itm.folderId.toString()) : null;
       return {
         ...itm,
-        folderName: folderInfo?.name || 'Workspace',
-        folderPath: folderInfo?.path || 'Workspace',
-        folderPathArray: folderInfo?.pathArray || ['Workspace']
+        folderName: folderInfo?.name || 'Space Root',
+        folderPath: folderInfo?.path || 'Space Root',
+        folderPathArray: folderInfo?.pathArray || []
       };
     }).sort((a, b) => {
       // Pinned first, then alphabetical
@@ -267,9 +255,9 @@ export const getItem = async (req, res) => {
     res.json({
       item: {
         ...item,
-        folderName: folderInfo?.name || 'Workspace',
-        folderPath: folderInfo?.path || 'Workspace',
-        folderPathArray: folderInfo?.pathArray || ['Workspace']
+        folderName: folderInfo?.name || 'Space Root',
+        folderPath: folderInfo?.path || 'Space Root',
+        folderPathArray: folderInfo?.pathArray || []
       }
     });
   } catch (err) {
@@ -299,27 +287,15 @@ export const createItem = async (req, res) => {
     const validTypes = ['note', 'doc', 'snippet', 'learning', 'prompt', 'repo', 'image'];
     const finalType = validTypes.includes(type) ? type : 'note';
 
-    // Verify or assign folderId
-    let finalFolderId = folderId;
-    if (finalFolderId) {
+    // Verify or assign folderId (null means Space Root)
+    let finalFolderId = folderId || null;
+    if (finalFolderId && finalFolderId !== 'root' && finalFolderId !== 'null') {
       const folderExists = await Folder.findOne({ _id: finalFolderId, spaceId });
       if (!folderExists) {
         finalFolderId = null;
       }
-    }
-
-    // If no valid folder provided, find or create default folder
-    if (!finalFolderId) {
-      let defaultFolder = await Folder.findOne({ spaceId }).sort({ createdAt: 1 });
-      if (!defaultFolder) {
-        defaultFolder = await Folder.create({
-          owner: req.user._id,
-          spaceId,
-          name: 'Workspace',
-          parentId: null
-        });
-      }
-      finalFolderId = defaultFolder._id;
+    } else {
+      finalFolderId = null;
     }
 
     const preview = content
@@ -370,9 +346,9 @@ export const createItem = async (req, res) => {
     res.status(201).json({
       item: {
         ...item.toObject(),
-        folderName: folderInfo?.name || 'Workspace',
-        folderPath: folderInfo?.path || 'Workspace',
-        folderPathArray: folderInfo?.pathArray || ['Workspace']
+        folderName: folderInfo?.name || 'Space Root',
+        folderPath: folderInfo?.path || 'Space Root',
+        folderPathArray: folderInfo?.pathArray || []
       }
     });
   } catch (err) {
@@ -404,10 +380,12 @@ export const updateItem = async (req, res) => {
     }
 
     if (updates.folderId !== undefined) {
-      if (updates.folderId) {
+      if (updates.folderId && updates.folderId !== 'root' && updates.folderId !== 'null') {
         const folderExists = await Folder.findOne({ _id: updates.folderId, spaceId });
         if (folderExists) {
           item.folderId = updates.folderId;
+        } else {
+          item.folderId = null;
         }
       } else {
         item.folderId = null;
@@ -436,7 +414,7 @@ export const updateItem = async (req, res) => {
       await logUserHistory(
         req.user._id,
         `moved_${item.type}`,
-        `Moved ${item.type} "${item.title}" to ${folderInfo?.name || 'Workspace'}`,
+        `Moved ${item.type} "${item.title}" to ${folderInfo?.name || 'Space Root'}`,
         { spaceId, itemId: item._id, type: item.type }
       );
     } else {
@@ -451,9 +429,9 @@ export const updateItem = async (req, res) => {
     res.json({
       item: {
         ...item.toObject(),
-        folderName: folderInfo?.name || 'Workspace',
-        folderPath: folderInfo?.path || 'Workspace',
-        folderPathArray: folderInfo?.pathArray || ['Workspace']
+        folderName: folderInfo?.name || 'Space Root',
+        folderPath: folderInfo?.path || 'Space Root',
+        folderPathArray: folderInfo?.pathArray || []
       }
     });
   } catch (err) {

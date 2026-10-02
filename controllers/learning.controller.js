@@ -44,7 +44,7 @@ export const getLearning = async (req, res) => {
 export const createLearning = async (req, res) => {
   try {
     const { spaceId } = req.params;
-    const { title, type, content, codeExample, tags } = req.body;
+    const { title, type, content, codeExample, tags, folderId } = req.body;
 
     if (!title || !content) {
       return res.status(400).json({ error: 'Title and content are required' });
@@ -56,6 +56,7 @@ export const createLearning = async (req, res) => {
     const learning = await Learning.create({
       owner: req.user._id,
       spaceId,
+      folderId: folderId || null,
       title: title.trim(),
       type: type || 'learning',
       content: content.trim(),

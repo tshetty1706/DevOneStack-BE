@@ -46,6 +46,9 @@ passport.use(
             if (!user.avatarUrl && profile.photos?.[0]?.value) {
               user.avatarUrl = profile.photos[0].value;
             }
+            if (profile.photos?.[0]?.value) {
+              user.googleAvatarUrl = profile.photos[0].value;
+            }
             await user.save();
             return done(null, user);
           }
@@ -62,6 +65,7 @@ passport.use(
             email,
             displayName: profile.displayName || profile.name?.givenName || "Developer",
             avatarUrl: profile.photos?.[0]?.value,
+            googleAvatarUrl: profile.photos?.[0]?.value,
             provider: "google",
             isVerified: true,
           });

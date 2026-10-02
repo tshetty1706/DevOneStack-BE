@@ -5,6 +5,7 @@ const { ObjectId } = Schema.Types;
 const PromptSchema = new Schema({
   owner:     { type: ObjectId, ref: 'User', required: true, index: true },
   spaceId:   { type: ObjectId, ref: 'Space', required: true },
+  folderId:  { type: ObjectId, ref: 'Folder', default: null, index: true },
   title:     { type: String, required: true, trim: true, maxLength: 100 },
   body:      { type: String, required: true, maxLength: 5000 },
   caption:   { type: String, maxLength: 200 },

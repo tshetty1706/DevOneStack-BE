@@ -33,7 +33,7 @@ export const listRepos = async (req, res) => {
 // POST /api/spaces/:spaceId/repos
 export const createRepo = async (req, res) => {
   try {
-    const { name, url, caption, platform, tags = [], isOwn = false } = req.body;
+    const { name, url, caption, platform, tags = [], isOwn = false, folderId } = req.body;
     const { spaceId } = req.params;
 
     if (!VALID_REPO_URL.test(url)) {
@@ -46,6 +46,7 @@ export const createRepo = async (req, res) => {
     const repo = await Repo.create({
       owner: req.user._id,
       spaceId,
+      folderId: folderId || null,
       name: name.trim(),
       url: url.trim(),
       caption: caption?.trim(),

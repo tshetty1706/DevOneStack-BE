@@ -33,7 +33,7 @@ export const listSnippets = async (req, res) => {
 // POST /api/spaces/:spaceId/snippets
 export const createSnippet = async (req, res) => {
   try {
-    const { name, caption, language, code = '', tags = [] } = req.body;
+    const { name, caption, language, code = '', tags = [], folderId } = req.body;
     const { spaceId } = req.params;
 
     const space = await verifySpaceOwnership(spaceId, req.user._id);
@@ -46,6 +46,7 @@ export const createSnippet = async (req, res) => {
     const snippet = await Snippet.create({
       owner: req.user._id,
       spaceId,
+      folderId: folderId || null,
       name: name.trim(),
       caption: caption?.trim(),
       language: language.trim(),

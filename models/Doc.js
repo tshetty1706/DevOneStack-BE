@@ -4,6 +4,7 @@ const { Schema } = mongoose;
 const DocSchema = new Schema({
   owner:               { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   spaceId:             { type: Schema.Types.ObjectId, ref: 'Space', required: true },
+  folderId:            { type: Schema.Types.ObjectId, ref: 'Folder', default: null, index: true },
   title:               { type: String, required: true, trim: true, maxLength: 120 },
   type:                { type: String, enum: ['url', 'pdf', 'image'], required: true },
 
