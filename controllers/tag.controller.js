@@ -1,71 +1,34 @@
 import mongoose from 'mongoose';
-import Learning from '../models/Learning.js';
-import Snippet from '../models/Snippet.js';
-import Doc from '../models/Doc.js';
-import Repo from '../models/Repo.js';
-import Prompt from '../models/Prompt.js';
-import Community from '../models/Community.js';
-
-const { ObjectId } = mongoose.Types;
+import Item from '../models/Item.js';
+import Space from '../models/Space.js';
 
 // GET /api/spaces/:spaceId/tags
 export const getAllTags = async (req, res) => {
   try {
     const { spaceId } = req.params;
-    const owner = req.user._id;
-
-    // CRITICAL: convert spaceId string to ObjectId before aggregation
     const spaceObjectId = new mongoose.Types.ObjectId(spaceId);
-    const ownerObjectId = new mongoose.Types.ObjectId(owner);
 
-    const collections = [
-      { model: Learning,  name: 'learnings' },
-      { model: Snippet,   name: 'snippets' },
-      { model: Doc,       name: 'docs' },
-      { model: Repo,      name: 'repos' },
-      { model: Prompt,    name: 'prompts' },
-      { model: Community, name: 'communities' },
-    ];
-
-    const tagMaps = await Promise.all(
-      collections.map(({ model, name }) =>
-        model.aggregate([
-          { $match: { spaceId: spaceObjectId, owner: ownerObjectId } },
-          { $unwind: { path: '$tags', preserveNullAndEmptyArrays: false } },
-          { $group: { _id: '$tags', count: { $sum: 1 } } },
-          { $project: { tag: '$_id', count: 1, _id: 0 } }
-        ])
-      )
-    );
-
-    // Merge across all collections
-    const merged = {};
-    tagMaps.forEach((results, i) => {
-      const sourceName = collections[i].name;
-      results.forEach(({ tag, count }) => {
-        if (!tag || tag.trim() === '') return; // skip empty tags
-        const cleanTag = tag.trim().toLowerCase();
-        if (!merged[cleanTag]) {
-          merged[cleanTag] = {
-            tag: cleanTag,
-            count: 0,
-            sources: [],
-            breakdown: { learnings: 0, snippets: 0, docs: 0, repos: 0, prompts: 0, communities: 0 }
-          };
+    const tagAggregation = await Item.aggregate([
+      { $match: { spaceId: spaceObjectId } },
+      { $unwind: { path: '$tags', preserveNullAndEmptyArrays: false } },
+      {
+        $group: {
+          _id: { $toLower: '$tags' },
+          count: { $sum: 1 },
+          types: { $addToSet: '$type' }
         }
-        merged[cleanTag].count += count;
-        merged[cleanTag].breakdown[sourceName] = (merged[cleanTag].breakdown[sourceName] || 0) + count;
-        if (!merged[cleanTag].sources.includes(sourceName)) {
-          merged[cleanTag].sources.push(sourceName);
-        }
-      });
-    });
+      },
+      { $sort: { count: -1 } }
+    ]);
 
-    const tags = Object.values(merged)
-      .filter(t => t.tag && t.count > 0)
-      .sort((a, b) => b.count - a.count);
+    const tags = tagAggregation
+      .filter(t => t._id && t._id.trim() !== '')
+      .map(t => ({
+        tag: t._id,
+        count: t.count,
+        sources: t.types || [],
+      }));
 
-    // Also get total unique tags count
     res.json({ tags, total: tags.length });
   } catch (err) {
     console.error('Tags aggregation error:', err);
@@ -77,32 +40,35 @@ export const getAllTags = async (req, res) => {
 export const getTagContent = async (req, res) => {
   try {
     const { spaceId, tag } = req.params;
-    const owner = req.user._id;
-
     const spaceObjectId = new mongoose.Types.ObjectId(spaceId);
-    const ownerObjectId = new mongoose.Types.ObjectId(owner);
 
-    // Case-insensitive tag search
     const tagRegex = new RegExp(`^${tag}$`, 'i');
-    const filter = {
+    const items = await Item.find({
       spaceId: spaceObjectId,
-      owner: ownerObjectId,
       tags: tagRegex
-    };
+    })
+      .sort({ isPinned: -1, updatedAt: -1 })
+      .lean();
 
-    const [docs, learnings, snippets, repos, prompts, communities] = await Promise.all([
-      Doc.find(filter).select('title type url caption tags cloudinaryUrl isPinned createdAt').limit(20),
-      Learning.find(filter).select('title type content tags isPinned createdAt').limit(20),
-      Snippet.find(filter).select('name caption language preview tags isPinned').limit(20),
-      Repo.find(filter).select('name url caption platform tags isPinned').limit(20),
-      Prompt.find(filter).select('title body caption model tags isPinned usedCount').limit(20),
-      Community.find(filter).select('name url platform caption tags isPinned').limit(20),
-    ]);
+    const docs = items.filter(i => i.type === 'doc' || i.type === 'image');
+    const learnings = items.filter(i => i.type === 'learning');
+    const snippets = items.filter(i => i.type === 'snippet');
+    const repos = items.filter(i => i.type === 'repo');
+    const prompts = items.filter(i => i.type === 'prompt');
+    const communities = items.filter(i => i.type === 'community');
+    const notes = items.filter(i => i.type === 'note');
 
-    const total = docs.length + learnings.length + snippets.length +
-                  repos.length + prompts.length + communities.length;
-
-    res.json({ docs, learnings, snippets, repos, prompts, communities, total });
+    res.json({
+      items,
+      docs,
+      learnings,
+      snippets,
+      repos,
+      prompts,
+      communities,
+      notes,
+      total: items.length
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -113,7 +79,6 @@ export const renameTag = async (req, res) => {
   try {
     const { spaceId } = req.params;
     const { oldTag, newTag } = req.body;
-    const owner = req.user._id;
 
     if (!oldTag || !newTag) {
       return res.status(400).json({ error: 'oldTag and newTag are required' });
@@ -122,19 +87,13 @@ export const renameTag = async (req, res) => {
     const cleanOld = oldTag.trim().toLowerCase();
     const cleanNew = newTag.trim().toLowerCase();
 
-    const filter = { spaceId: new ObjectId(spaceId), owner, tags: cleanOld };
-    const update = { $set: { 'tags.$': cleanNew } };
+    await Item.updateMany(
+      { spaceId, tags: cleanOld },
+      { $set: { 'tags.$[elem]': cleanNew } },
+      { arrayFilters: [{ elem: cleanOld }] }
+    );
 
-    await Promise.all([
-      Learning.updateMany(filter, update),
-      Snippet.updateMany(filter, update),
-      Doc.updateMany(filter, update),
-      Repo.updateMany(filter, update),
-      Prompt.updateMany(filter, update),
-      Community.updateMany(filter, update),
-    ]);
-
-    res.json({ message: `Renamed "${oldTag}" to "${newTag}" across all content` });
+    res.json({ message: `Renamed #${cleanOld} to #${cleanNew}` });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -144,22 +103,14 @@ export const renameTag = async (req, res) => {
 export const deleteTag = async (req, res) => {
   try {
     const { spaceId, tag } = req.params;
-    const owner = req.user._id;
     const cleanTag = tag.trim().toLowerCase();
 
-    const filter = { spaceId: new ObjectId(spaceId), owner, tags: cleanTag };
-    const update = { $pull: { tags: cleanTag } };
+    await Item.updateMany(
+      { spaceId, tags: cleanTag },
+      { $pull: { tags: cleanTag } }
+    );
 
-    await Promise.all([
-      Learning.updateMany(filter, update),
-      Snippet.updateMany(filter, update),
-      Doc.updateMany(filter, update),
-      Repo.updateMany(filter, update),
-      Prompt.updateMany(filter, update),
-      Community.updateMany(filter, update),
-    ]);
-
-    res.json({ message: `Removed tag "${tag}" from all content` });
+    res.json({ message: `Removed tag #${cleanTag}` });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

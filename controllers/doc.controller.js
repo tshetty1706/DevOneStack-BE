@@ -1,7 +1,7 @@
-import Doc from '../models/Doc.js';
+import Item from '../models/Item.js';
 import uploadToCloudinary from '../utils/uploadToCloudinary.js';
 import deleteFromCloudinary from '../utils/deleteFromCloudinary.js';
-import { syncPinnedItem } from '../utils/pinSync.js';
+import { saveFileLocally, deleteLocalFile, getLocalFilePath, fetchAndCacheCloudinaryRawAsset } from '../utils/fileStorage.js';
 import axios from 'axios';
 import cloudinary from '../config/cloudinary.js';
 import {
@@ -18,16 +18,35 @@ export const listDocs = async (req, res) => {
     const { spaceId } = req.params;
     const { lastId, tag } = req.query;
 
-    const filter = { spaceId, owner: req.user._id, isAttachment: { $ne: true } };
+    const filter = { spaceId, owner: req.user._id, type: { $in: ['doc', 'image'] } };
     if (lastId) filter._id = { $gt: lastId };
-    if (tag)    filter.tags = tag;
+    if (tag) filter.tags = tag.toLowerCase().trim();
 
-    const docs = await Doc.find(filter)
+    const items = await Item.find(filter)
       .sort({ createdAt: -1 })
-      .limit(20)
-      .select('-__v');
+      .limit(50)
+      .lean();
 
-    res.json({ docs, hasMore: docs.length === 20 });
+    const docs = items.map(i => ({
+      _id: i._id,
+      title: i.title,
+      type: i.docType || i.type,
+      url: i.url,
+      cloudinaryPublicId: i.cloudinaryPublicId,
+      cloudinaryUrl: i.cloudinaryUrl,
+      format: i.format,
+      fileSize: i.fileSize,
+      width: i.width,
+      height: i.height,
+      caption: i.caption,
+      tags: i.tags,
+      isPinned: i.isPinned,
+      folderId: i.folderId,
+      createdAt: i.createdAt,
+      updatedAt: i.updatedAt,
+    }));
+
+    res.json({ docs, hasMore: items.length === 50 });
   } catch (err) {
     sendError(res, err, 'Failed to load docs');
   }
@@ -42,15 +61,16 @@ export const addUrlDoc = async (req, res) => {
     const space = await verifySpaceOwnership(spaceId, req.user._id);
     if (!space) return res.status(404).json({ error: 'Space not found' });
 
-    const doc = await Doc.create({
-      owner:   req.user._id,
+    const item = await Item.create({
+      owner: req.user._id,
       spaceId,
       folderId: folderId || null,
-      title:   title.trim(),
-      type:    'url',
-      url:     url.trim(),
-      caption: caption?.trim(),
-      tags:    parseTags(tags),
+      title: title.trim(),
+      type: 'doc',
+      docType: 'url',
+      url: url.trim(),
+      caption: caption?.trim() || '',
+      tags: parseTags(tags),
     });
 
     await updateSpaceResourceCount(spaceId, 'docsCount', 1);
@@ -58,11 +78,24 @@ export const addUrlDoc = async (req, res) => {
     await logUserHistory(
       req.user._id,
       'created_doc',
-      `Added url doc "${doc.title}"`,
-      { spaceId, docId: doc._id }
+      `Added url doc "${item.title}"`,
+      { spaceId, docId: item._id }
     );
 
-    res.status(201).json({ doc });
+    res.status(201).json({
+      doc: {
+        _id: item._id,
+        title: item.title,
+        type: 'url',
+        url: item.url,
+        caption: item.caption,
+        tags: item.tags,
+        isPinned: item.isPinned,
+        folderId: item.folderId,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+      }
+    });
   } catch (err) {
     sendError(res, err);
   }
@@ -70,9 +103,12 @@ export const addUrlDoc = async (req, res) => {
 
 // POST /api/spaces/:spaceId/docs/upload
 export const uploadDoc = async (req, res) => {
+  let uploadedCloudinaryPublicId = null;
+  let uploadedResourceType = 'image';
+
   try {
     const { spaceId } = req.params;
-    const { title, caption, tags, isAttachment, folderId } = req.body;
+    const { title, caption, tags, folderId } = req.body;
     const file = req.file;
 
     if (!file) return res.status(400).json({ error: 'No file provided' });
@@ -80,66 +116,90 @@ export const uploadDoc = async (req, res) => {
     const space = await verifySpaceOwnership(spaceId, req.user._id);
     if (!space) return res.status(404).json({ error: 'Space not found' });
 
-    const isPdf = file.mimetype === 'application/pdf';
+    const isPdf = file.mimetype === 'application/pdf' || file.originalname?.toLowerCase().endsWith('.pdf');
+    const isImage = file.mimetype?.startsWith('image/') || /\.(jpe?g|png|webp|gif|svg|bmp)$/i.test(file.originalname || '');
+    const resourceType = isPdf ? 'raw' : 'image';
+    uploadedResourceType = resourceType;
 
-    const fileExt = file.originalname.substring(file.originalname.lastIndexOf('.'));
+    let parsedTags = tags;
+    if (typeof tags === 'string') {
+      try { parsedTags = JSON.parse(tags); } catch { parsedTags = []; }
+    }
+
+    const fileExt = file.originalname.substring(file.originalname.lastIndexOf('.')) || (isPdf ? '.pdf' : '.jpg');
     const cleanOrigName = file.originalname.substring(0, file.originalname.lastIndexOf('.'))
-      .replace(/[^a-zA-Z0-9]/g, '_');
-    const customPublicId = `${cleanOrigName}-${Date.now()}${fileExt}`;
+      .replace(/[^a-zA-Z0-9]/g, '_') || 'doc';
+    const customPublicId = isPdf
+      ? `${cleanOrigName}-${Date.now()}${fileExt}`
+      : `${cleanOrigName}-${Date.now()}`;
 
-    // Upload buffer to Cloudinary
-    let folder = `devonestack/${req.user._id}/${spaceId}`;
-    let cloudinaryResult;
+    const localSave = await saveFileLocally(file.buffer, file.originalname, isPdf ? 'documents' : 'images');
+
+    let cloudinaryResult = null;
     try {
       cloudinaryResult = await uploadToCloudinary(file.buffer, {
-        folder,
+        folder: `devonestack/${req.user._id}/${spaceId}`,
+        resource_type: resourceType,
         public_id: customPublicId,
-        resource_type: isPdf ? 'raw' : 'image',
       });
+      uploadedCloudinaryPublicId = cloudinaryResult?.public_id;
     } catch (uploadErr) {
-      console.error("Cloudinary upload failed:", uploadErr);
-      return res.status(500).json({ error: 'Cloudinary configuration is invalid or upload failed' });
+      console.warn("[Doc Upload Warning] Cloudinary upload warning (using local file fallback):", uploadErr.message);
     }
 
-    let parsedTags = [];
-    if (tags) {
-      try {
-        parsedTags = Array.isArray(tags) ? tags : JSON.parse(tags);
-      } catch (e) {
-        parsedTags = typeof tags === 'string' ? tags.split(',').map(t => t.trim()).filter(Boolean) : [];
-      }
-    }
-
-    const doc = await Doc.create({
-      owner:              req.user._id,
+    const item = await Item.create({
+      owner: req.user._id,
       spaceId,
-      folderId:           folderId || null,
-      title:              title?.trim() || file.originalname,
-      type:               isPdf ? 'pdf' : 'image',
-      cloudinaryPublicId: cloudinaryResult.public_id,
-      cloudinaryUrl:      cloudinaryResult.secure_url,
-      format:             cloudinaryResult.format,
-      fileSize:           cloudinaryResult.bytes,
-      width:              cloudinaryResult.width  || null,
-      height:             cloudinaryResult.height || null,
-      caption:            caption?.trim(),
-      tags:               parseTags(parsedTags),
-      isAttachment:       isAttachment === 'true' || isAttachment === true,
+      folderId: (folderId && folderId !== 'root') ? folderId : null,
+      title: title?.trim() || file.originalname,
+      type: isPdf ? 'doc' : (isImage ? 'image' : 'doc'),
+      docType: isPdf ? 'pdf' : (isImage ? 'image' : 'doc'),
+      cloudinaryPublicId: cloudinaryResult?.public_id || '',
+      cloudinaryUrl: cloudinaryResult?.secure_url || cloudinaryResult?.url || (localSave ? `/${localSave.relativePath}` : ''),
+      format: cloudinaryResult?.format || (isPdf ? 'pdf' : fileExt.replace('.', '')),
+      fileSize: cloudinaryResult?.bytes || file.size,
+      width: cloudinaryResult?.width || null,
+      height: cloudinaryResult?.height || null,
+      localPath: localSave?.relativePath || '',
+      caption: caption?.trim() || '',
+      tags: parseTags(parsedTags),
     });
 
-    if (!doc.isAttachment) {
-      await updateSpaceResourceCount(spaceId, 'docsCount', 1);
+    await updateSpaceResourceCount(spaceId, isPdf ? 'docsCount' : 'imagesCount', 1);
 
-      await logUserHistory(
-        req.user._id,
-        'created_doc',
-        `Uploaded doc "${doc.title}"`,
-        { spaceId, docId: doc._id }
-      );
-    }
+    await logUserHistory(
+      req.user._id,
+      'created_doc',
+      `Uploaded doc "${item.title}"`,
+      { spaceId, docId: item._id }
+    );
 
-    res.status(201).json({ doc });
+    res.status(201).json({
+      doc: {
+        _id: item._id,
+        title: item.title,
+        type: item.docType,
+        cloudinaryUrl: item.cloudinaryUrl,
+        cloudinaryPublicId: item.cloudinaryPublicId,
+        format: item.format,
+        fileSize: item.fileSize,
+        caption: item.caption,
+        tags: item.tags,
+        isPinned: item.isPinned,
+        folderId: item.folderId,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+      },
+      item
+    });
   } catch (err) {
+    if (uploadedCloudinaryPublicId) {
+      try {
+        await deleteFromCloudinary(uploadedCloudinaryPublicId, uploadedResourceType);
+      } catch (cleanErr) {
+        console.error('[Doc Upload Rollback Error]', cleanErr);
+      }
+    }
     sendError(res, err);
   }
 };
@@ -147,52 +207,116 @@ export const uploadDoc = async (req, res) => {
 // GET /api/spaces/:spaceId/docs/:docId/file
 export const getDocFile = async (req, res) => {
   try {
-    const doc = await Doc.findOne({
-      _id: req.params.docId,
-      owner: req.user._id,
-    });
-    if (!doc) return res.status(404).json({ error: 'Not found' });
+    const { spaceId, docId } = req.params;
+    const item = await Item.findOne({ _id: docId, spaceId });
+    if (!item) return res.status(404).json({ error: 'Not found' });
 
-    // For URL type — just return the URL
-    if (doc.type === 'url') {
-      return res.json({ url: doc.url, type: 'url' });
+    const isPdf =
+      item.docType === 'pdf' ||
+      item.type === 'pdf' ||
+      item.format === 'pdf' ||
+      (item.title && item.title.toLowerCase().endsWith('.pdf')) ||
+      (item.cloudinaryUrl && item.cloudinaryUrl.toLowerCase().includes('.pdf')) ||
+      (item.cloudinaryPublicId && item.cloudinaryPublicId.toLowerCase().includes('.pdf')) ||
+      (item.url && item.url.toLowerCase().includes('.pdf'));
+
+    // Priority 1: Serve directly from local disk (instant, 0 401s, supports Range requests)
+    if (item.localPath) {
+      const absPath = getLocalFilePath(item.localPath);
+      if (absPath) {
+        res.removeHeader('X-Frame-Options');
+        res.setHeader('Content-Security-Policy', "frame-ancestors *");
+        res.setHeader('Content-Type', isPdf ? 'application/pdf' : (item.format ? `image/${item.format}` : 'application/octet-stream'));
+        res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(item.title || 'document')}.${item.format || (isPdf ? 'pdf' : 'bin')}"`);
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+        return res.sendFile(absPath);
+      }
     }
 
-    // For images — return signed Cloudinary URL using private_download_url
-    if (doc.type === 'image') {
-      const signedUrl = cloudinary.utils.private_download_url(doc.cloudinaryPublicId, doc.format || 'jpg', {
-        type:          'authenticated',
-        resource_type: 'image',
-        expires_at:    Math.floor(Date.now() / 1000) + 3600,
-      });
-      return res.json({ url: signedUrl, type: 'image' });
+    // Priority 2: Auto-fetch and cache via Cloudinary Admin signed archive API (bypasses all CDN 401 restrictions)
+    if (isPdf && item.cloudinaryPublicId) {
+      try {
+        const cached = await fetchAndCacheCloudinaryRawAsset(item.cloudinaryPublicId, `${item.title || 'document'}.pdf`);
+        if (cached && cached.absolutePath) {
+          item.localPath = cached.relativePath;
+          await item.save().catch(() => {});
+          res.removeHeader('X-Frame-Options');
+          res.setHeader('Content-Security-Policy', "frame-ancestors *");
+          res.setHeader('Content-Type', 'application/pdf');
+          res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(item.title || 'document')}.pdf"`);
+          res.setHeader('Cache-Control', 'public, max-age=86400');
+          return res.sendFile(cached.absolutePath);
+        }
+      } catch (cacheErr) {
+        console.warn('[Doc Cache On-Demand Failed]:', cacheErr.message);
+      }
     }
 
-    // For PDFs — stream through backend with inline header
-    if (doc.type === 'pdf') {
-      const fetchUrl = cloudinary.utils.private_download_url(doc.cloudinaryPublicId, doc.format || 'pdf', {
-        type:          'authenticated',
-        resource_type: 'raw',
-        expires_at:    Math.floor(Date.now() / 1000) + 300,
-      });
+    // Priority 2: Proxy stream from Cloudinary
+    if (isPdf && (item.cloudinaryUrl || item.cloudinaryPublicId)) {
+      const fetchUrls = [];
 
-      const response = await axios.get(fetchUrl, {
-        responseType: 'stream',
-        timeout: 30000,
-      });
+      if (item.cloudinaryPublicId) {
+        const cleanPublicId = item.cloudinaryPublicId.replace(/\.pdf$/i, '');
+        try {
+          const privateRaw = cloudinary.utils.private_download_url(cleanPublicId, 'pdf', {
+            resource_type: 'raw',
+          });
+          if (privateRaw) fetchUrls.push(privateRaw);
+        } catch (e) {}
 
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `inline; filename="${doc.title}.pdf"`);
-      res.setHeader('Cache-Control', 'private, max-age=300');
-      res.setHeader('X-Content-Type-Options', 'nosniff');
+        try {
+          const privateImage = cloudinary.utils.private_download_url(cleanPublicId, 'pdf', {
+            resource_type: 'image',
+          });
+          if (privateImage) fetchUrls.push(privateImage);
+        } catch (e) {}
 
-      response.data.pipe(res);
+        try {
+          const signedRaw = cloudinary.url(item.cloudinaryPublicId, {
+            resource_type: 'raw',
+            sign_url: true,
+            secure: true,
+          });
+          if (signedRaw) fetchUrls.push(signedRaw);
+        } catch (e) {}
+      }
 
-      response.data.on('error', (err) => {
-        console.error('PDF stream error:', err);
-        if (!res.headersSent) res.status(500).end();
-      });
+      if (item.cloudinaryUrl) {
+        fetchUrls.push(item.cloudinaryUrl);
+      }
+
+      for (const targetUrl of fetchUrls) {
+        try {
+          const response = await axios.get(targetUrl, {
+            responseType: 'stream',
+            timeout: 30000,
+          });
+
+          if (response.status === 200) {
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(item.title || 'document')}.pdf"`);
+            res.setHeader('Cache-Control', 'public, max-age=86400');
+            res.setHeader('X-Content-Type-Options', 'nosniff');
+            return response.data.pipe(res);
+          }
+        } catch (streamErr) {
+          // Try next candidate
+        }
+      }
+
+      if (item.cloudinaryUrl) return res.redirect(item.cloudinaryUrl);
     }
+
+    if (item.cloudinaryUrl) {
+      return res.redirect(item.cloudinaryUrl);
+    }
+
+    if (item.url) {
+      return res.redirect(item.url);
+    }
+
+    return res.status(404).json({ error: 'No file found' });
   } catch (err) {
     console.error('getDocFile error:', err);
     if (!res.headersSent) sendError(res, err);
@@ -202,30 +326,34 @@ export const getDocFile = async (req, res) => {
 // PATCH /api/spaces/:spaceId/docs/:docId
 export const updateDoc = async (req, res) => {
   try {
-    const { title, caption, tags, isPinned } = req.body;
-    const update = {};
-    if (title !== undefined)    update.title   = title.trim();
-    if (caption !== undefined)  update.caption = caption.trim();
-    if (tags !== undefined)     update.tags    = parseTags(tags);
-    if (isPinned !== undefined) update.isPinned = isPinned;
+    const { title, caption, tags, isPinned, folderId } = req.body;
+    const item = await Item.findOne({ _id: req.params.docId, owner: req.user._id });
+    if (!item) return res.status(404).json({ error: 'Not found' });
 
-    const doc = await Doc.findOneAndUpdate(
-      { _id: req.params.docId, owner: req.user._id },
-      update,
-      { new: true, runValidators: true }
-    );
-    if (!doc) return res.status(404).json({ error: 'Not found' });
+    if (title !== undefined) item.title = title.trim();
+    if (caption !== undefined) item.caption = caption.trim();
+    if (tags !== undefined) item.tags = parseTags(tags);
+    if (isPinned !== undefined) item.isPinned = isPinned;
+    if (folderId !== undefined) item.folderId = (folderId && folderId !== 'root') ? folderId : null;
 
-    if (isPinned !== undefined) {
-      await syncPinnedItem(req.user._id, doc.spaceId, doc._id, 'doc', doc.isPinned, {
-        name: doc.title,
-        code: doc.type === 'url' ? doc.url : doc.cloudinaryUrl,
-        language: doc.type,
-        tags: doc.tags
-      });
-    }
+    await item.save();
 
-    res.json({ doc });
+    res.json({
+      doc: {
+        _id: item._id,
+        title: item.title,
+        type: item.docType || item.type,
+        cloudinaryUrl: item.cloudinaryUrl,
+        format: item.format,
+        fileSize: item.fileSize,
+        caption: item.caption,
+        tags: item.tags,
+        isPinned: item.isPinned,
+        folderId: item.folderId,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+      }
+    });
   } catch (err) {
     sendError(res, err);
   }
@@ -234,26 +362,26 @@ export const updateDoc = async (req, res) => {
 // DELETE /api/spaces/:spaceId/docs/:docId
 export const deleteDoc = async (req, res) => {
   try {
-    const doc = await Doc.findOneAndDelete({
+    const item = await Item.findOneAndDelete({
       _id: req.params.docId,
       owner: req.user._id,
     });
-    if (!doc) return res.status(404).json({ error: 'Not found' });
+    if (!item) return res.status(404).json({ error: 'Not found' });
 
-    // Sync pin removal
-    await syncPinnedItem(req.user._id, doc.spaceId, doc._id, 'doc', false);
+    if (item.localPath) {
+      await deleteLocalFile(item.localPath);
+    }
 
-    // Delete from Cloudinary if it was a file upload
-    if (doc.cloudinaryPublicId) {
-      const resourceType = doc.type === 'pdf' ? 'raw' : 'image';
+    if (item.cloudinaryPublicId) {
+      const resourceType = (item.docType === 'pdf' || item.type === 'pdf') ? 'raw' : 'image';
       try {
-        await deleteFromCloudinary(doc.cloudinaryPublicId, resourceType);
+        await deleteFromCloudinary(item.cloudinaryPublicId, resourceType);
       } catch (delErr) {
-        console.error("Failed to delete from Cloudinary:", delErr);
+        console.error('Failed to delete from Cloudinary:', delErr);
       }
     }
 
-    await updateSpaceResourceCount(doc.spaceId, 'docsCount', -1);
+    await updateSpaceResourceCount(item.spaceId, item.type === 'image' ? 'imagesCount' : 'docsCount', -1);
 
     res.json({ message: 'Deleted' });
   } catch (err) {
@@ -267,18 +395,18 @@ export const searchDocs = async (req, res) => {
     const { q } = req.query;
     const { spaceId } = req.params;
 
-    const docs = await Doc.find({
+    const items = await Item.find({
       spaceId,
       owner: req.user._id,
-      isAttachment: { $ne: true },
+      type: { $in: ['doc', 'image'] },
       $or: [
-        { title:   { $regex: q, $options: 'i' } },
+        { title: { $regex: q, $options: 'i' } },
         { caption: { $regex: q, $options: 'i' } },
-        { tags:    { $regex: q, $options: 'i' } },
+        { tags: { $regex: q, $options: 'i' } },
       ]
-    }).limit(20).select('-__v');
+    }).limit(20).lean();
 
-    res.json({ docs, count: docs.length });
+    res.json({ docs: items, count: items.length });
   } catch (err) {
     sendError(res, err);
   }

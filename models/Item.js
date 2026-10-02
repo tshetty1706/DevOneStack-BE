@@ -8,7 +8,7 @@ const ItemSchema = new Schema({
   title:       { type: String, required: true, trim: true, maxLength: 200 },
   type:        {
     type: String,
-    enum: ['note', 'doc', 'snippet', 'learning', 'prompt', 'repo', 'image'],
+    enum: ['note', 'doc', 'snippet', 'learning', 'prompt', 'repo', 'image', 'community'],
     required: true,
     index: true
   },
@@ -30,9 +30,15 @@ const ItemSchema = new Schema({
   repoName:    { type: String, trim: true },
   starsCount:  { type: Number, default: 0 },
   forksCount:  { type: Number, default: 0 },
+  isOwn:       { type: Boolean, default: false },
   model:       { type: String, trim: true, maxLength: 50 },
   usedCount:   { type: Number, default: 0 },
   lastUsed:    { type: Date },
+
+  // Community attributes
+  platform:    { type: String, trim: true, default: 'other' },
+  memberCount: { type: String, trim: true, maxLength: 50 },
+  credentials: { type: String, default: '' },
 
   // Cloudinary references (for PDFs and Images)
   cloudinaryPublicId: { type: String },
@@ -41,11 +47,15 @@ const ItemSchema = new Schema({
   fileSize:           { type: Number },
   width:              { type: Number },
   height:             { type: Number },
+
+  // Local storage persistence reference
+  localPath:          { type: String },
 }, { timestamps: true });
 
-ItemSchema.index({ spaceId: 1, folderId: 1, type: 1 });
-ItemSchema.index({ spaceId: 1, type: 1, updatedAt: -1 });
+ItemSchema.index({ spaceId: 1, type: 1, folderId: 1 });
+ItemSchema.index({ spaceId: 1, folderId: 1, isPinned: -1, updatedAt: -1 });
+ItemSchema.index({ spaceId: 1, type: 1, isPinned: -1, updatedAt: -1 });
 ItemSchema.index({ spaceId: 1, tags: 1 });
-ItemSchema.index({ spaceId: 1, title: 1 });
+ItemSchema.index({ owner: 1, updatedAt: -1 });
 
 export default mongoose.model('Item', ItemSchema);

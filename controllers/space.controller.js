@@ -11,7 +11,6 @@ import Folder from "../models/Folder.js";
 import Item from "../models/Item.js";
 import deleteFromCloudinary from "../utils/deleteFromCloudinary.js";
 import uploadToCloudinary from "../utils/uploadToCloudinary.js";
-import { getIconKeyByName } from "../utils/iconMapping.js";
 import { logUserHistory } from "../utils/spaceHelpers.js";
 
 export const getSpaces = async (req, res) => {
@@ -80,7 +79,7 @@ export const getSpace = async (req, res) => {
 export const createSpace = async (req, res) => {
   try {
     const { name, description, tool, thumbnail, visibility, tags, iconKey, template, enabledModules, readme } = req.body;
-    
+
     const trimmedName = (name || '').trim();
     if (!trimmedName) {
       return res.status(400).json({ error: "Space name is required" });
@@ -213,7 +212,7 @@ export const updateSpace = async (req, res) => {
     }
 
     if (tags !== undefined) {
-      update.tags = Array.isArray(tags) 
+      update.tags = Array.isArray(tags)
         ? tags.map(t => typeof t === 'string' ? t.trim() : '').filter(Boolean)
         : (typeof tags === 'string' ? tags.split(',').map(t => t.trim()).filter(Boolean) : []);
     }
@@ -301,32 +300,32 @@ export const deleteSpace = async (req, res) => {
       return res.status(404).json({ error: "Space not found" });
     }
 
-    // Get IDs for content-split collections
-    const [snippets, docs] = await Promise.all([
-      Snippet.find({ spaceId }).select('_id'),
-      Doc.find({ spaceId, cloudinaryPublicId: { $exists: true } }).select('cloudinaryPublicId type'),
-    ]);
+    // Get items with Cloudinary assets for cleanup
+    const cloudinaryItems = await Item.find({
+      spaceId,
+      cloudinaryPublicId: { $exists: true, $ne: '' }
+    }).select('cloudinaryPublicId docType type').lean();
 
     // Delete everything in parallel
     await Promise.all([
       Folder.deleteMany({ spaceId }),
       Item.deleteMany({ spaceId }),
-      Learning.deleteMany({ spaceId }),
-      Snippet.deleteMany({ spaceId }),
-      SnippetContent.deleteMany({ snippetId: { $in: snippets.map(s => s._id) } }),
-      Doc.deleteMany({ spaceId }),
-      Repo.deleteMany({ spaceId }),
-      Prompt.deleteMany({ spaceId }),
-      Community.deleteMany({ spaceId }),
+      Doc.deleteMany({ spaceId }).catch(() => {}),
+      Learning.deleteMany({ spaceId }).catch(() => {}),
+      Snippet.deleteMany({ spaceId }).catch(() => {}),
+      SnippetContent.deleteMany({}).catch(() => {}),
+      Repo.deleteMany({ spaceId }).catch(() => {}),
+      Prompt.deleteMany({ spaceId }).catch(() => {}),
+      Community.deleteMany({ spaceId }).catch(() => {}),
       History.deleteMany({ 'meta.spaceId': spaceId }),
     ]);
 
-    // Delete Cloudinary files for this space (after DB cleanup)
+    // Delete Cloudinary files for this space
     await Promise.allSettled(
-      docs.map(doc =>
+      cloudinaryItems.map(item =>
         deleteFromCloudinary(
-          doc.cloudinaryPublicId,
-          doc.type === 'pdf' ? 'raw' : 'image'
+          item.cloudinaryPublicId,
+          (item.docType === 'pdf' || item.type === 'pdf') ? 'raw' : 'image'
         )
       )
     );
@@ -347,24 +346,25 @@ export const recountSpace = async (req, res) => {
     const space = await Space.findOne({ _id: spaceId, owner });
     if (!space) return res.status(404).json({ error: 'Not found' });
 
-    const [docsCount, notesCount, learningsCount, snippetsCount, reposCount, promptsCount, communitiesCount] =
+    const [docsCount, notesCount, learningsCount, snippetsCount, reposCount, promptsCount, communitiesCount, imagesCount] =
       await Promise.all([
-        Item.countDocuments({ spaceId, type: 'doc' }),
+        Item.countDocuments({ spaceId, type: { $in: ['doc', 'image'] } }),
         Item.countDocuments({ spaceId, type: 'note' }),
         Item.countDocuments({ spaceId, type: 'learning' }),
         Item.countDocuments({ spaceId, type: 'snippet' }),
         Item.countDocuments({ spaceId, type: 'repo' }),
         Item.countDocuments({ spaceId, type: 'prompt' }),
-        Community.countDocuments({ spaceId, owner }),
+        Item.countDocuments({ spaceId, type: 'community' }),
+        Item.countDocuments({ spaceId, type: 'image' }),
       ]);
 
     const updated = await Space.findOneAndUpdate(
       { _id: spaceId, owner },
-      { 
-        $set: { 
+      {
+        $set: {
           docsCount, notesCount, learningsCount, snippetsCount, reposCount, promptsCount, communitiesCount,
           updatedAt: new Date()
-        } 
+        }
       },
       { new: true }
     );

@@ -14,17 +14,14 @@ import upload from "../config/multer.js";
 
 const router = express.Router();
 
-// Apply protectRoute to all space endpoints automatically
-router.use(protectRoute);
-
-router.get("/", getSpaces);
-router.post("/upload-thumbnail", upload.single("thumbnail"), uploadSpaceThumbnail);
-router.patch("/:spaceId/recount", recountSpace);
-router.get("/:id", getSpace);
-router.post("/", createSpace);
-router.patch("/:id", updateSpace);
-router.post("/:id/star", toggleStarSpace);
-router.delete("/:id", deleteSpace);
+router.get("/", protectRoute, getSpaces);
+router.post("/upload-thumbnail", protectRoute, upload.single("thumbnail"), uploadSpaceThumbnail);
+router.patch("/:spaceId/recount", protectRoute, recountSpace);
+router.get("/:id", protectRoute, getSpace);
+router.post("/", protectRoute, createSpace);
+router.patch("/:id", protectRoute, updateSpace);
+router.post("/:id/star", protectRoute, toggleStarSpace);
+router.delete("/:id", protectRoute, deleteSpace);
 
 export default router;
 
