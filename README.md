@@ -167,3 +167,9 @@ http://localhost:9000/api/auth/google/callback
 - All tokens stored in **httpOnly cookies** — never exposed to JavaScript.
 - Refresh token stored in MongoDB — logout truly invalidates it.
 - **Dynamic Touch on Recount**: Space counts recalculation triggers a forced `updatedAt` refresh so dashboard activity clocks remain dynamic.
+## Recent Enhancements
+
+- **Pinned Items Dashboard**: Users can now pin notes, snippets, docs, repos, prompts, and communities. Pinned items appear on the main dashboard with copy-to-clipboard, preview, and local filtering.
+- **Profile Improvements**: Smooth scrolling in profile modals, strict validation for personal info, education dates, phone numbers, and social URLs. Avatar updates propagate globally via localStorage sync.
+- **Explore View Updates**: Items open in full-screen mode with minimize/maximize controls; copy functionality added to snippet view.
+- **Improved `.gitignore`**: Updated to exclude build artifacts, coverage reports, secret keys, OS files, and IDE caches for both frontend and backend.
