@@ -4,6 +4,7 @@ import User from "../models/User.js";
 import { signAccessToken, signRefreshToken } from "../utils/jwt.js";
 import { sendVerificationEmail, sendResetPasswordEmail, sendResetConfirmationEmail } from "../utils/email.js";
 import { ensureUserHasUsername } from "../utils/usernameGenerator.js";
+import uploadToCloudinary from "../utils/uploadToCloudinary.js";
 
 // Helper to validate password strength
 const isPasswordStrong = (pwd) => {
@@ -139,7 +140,7 @@ export const login = async (req, res) => {
       return res.status(404).json({ error: "No account found with this email address. Please sign up first." });
     }
 
-    if (user.provider !== "local") {
+    if (user.provider !== "local" || !user.passwordHash) {
       return res.status(400).json({
         error: `An account with this email exists via ${user.provider === 'google' ? 'Google' : user.provider}. Please sign in using that method.`
       });
@@ -352,4 +353,96 @@ export const refresh = async (req, res) => {
 export const getMe = async (req, res) => {
   // protectRoute populated req.user
   return res.json({ user: req.user });
+};
+
+export const updateProfile = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const {
+      displayName,
+      bio,
+      role,
+      skills,
+      phone,
+      location,
+      website,
+      socials,
+      education,
+      avatarUrl
+    } = req.body;
+
+    if (displayName !== undefined) user.displayName = String(displayName).trim();
+    if (bio !== undefined) user.bio = String(bio).trim();
+    if (role !== undefined) user.role = String(role).trim();
+    if (skills !== undefined && Array.isArray(skills)) {
+      user.skills = skills.map(s => String(s).trim()).filter(Boolean);
+    }
+    if (phone !== undefined) user.phone = String(phone).trim();
+    if (location !== undefined) user.location = String(location).trim();
+    if (website !== undefined) user.website = String(website).trim();
+    if (avatarUrl !== undefined) user.avatarUrl = avatarUrl;
+
+    if (socials && typeof socials === 'object') {
+      user.socials = {
+        github: socials.github !== undefined ? String(socials.github).trim() : (user.socials?.github || ''),
+        linkedin: socials.linkedin !== undefined ? String(socials.linkedin).trim() : (user.socials?.linkedin || ''),
+        twitter: socials.twitter !== undefined ? String(socials.twitter).trim() : (user.socials?.twitter || ''),
+        website: socials.website !== undefined ? String(socials.website).trim() : (user.socials?.website || ''),
+      };
+    }
+
+    if (education !== undefined && Array.isArray(education)) {
+      user.education = education.map(e => ({
+        institution: e.institution ? String(e.institution).trim() : '',
+        degree: e.degree ? String(e.degree).trim() : '',
+        fieldOfStudy: e.fieldOfStudy ? String(e.fieldOfStudy).trim() : '',
+        startYear: e.startYear ? String(e.startYear).trim() : '',
+        endYear: e.endYear ? String(e.endYear).trim() : '',
+      })).filter(e => e.institution || e.degree);
+    }
+
+    await user.save();
+    return res.json({ message: "Profile updated successfully", user });
+  } catch (err) {
+    console.error("updateProfile error:", err);
+    return res.status(500).json({ error: "Failed to update profile" });
+  }
+};
+
+export const uploadAvatar = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No image file provided" });
+    }
+
+    // Upload to Cloudinary
+    const result = await uploadToCloudinary(req.file.buffer, {
+      folder: 'devonestack/avatars',
+      resource_type: 'image',
+      type: 'upload',
+      access_mode: 'public',
+      transformation: [{ width: 400, height: 400, crop: 'fill', gravity: 'face' }]
+    });
+
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    user.avatarUrl = result.secure_url;
+    await user.save();
+
+    return res.json({
+      message: "Avatar updated successfully",
+      avatarUrl: result.secure_url,
+      user
+    });
+  } catch (err) {
+    console.error("uploadAvatar error:", err);
+    return res.status(500).json({ error: "Failed to upload avatar" });
+  }
 };

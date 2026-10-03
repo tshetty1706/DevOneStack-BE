@@ -40,19 +40,28 @@ export const syncPinnedItem = async (userId, spaceId, itemId, itemType, isPinned
   }
 };
 
+import Item from '../models/Item.js';
+
 export const togglePin = (Model) => async (req, res) => {
   try {
-    const itemId = req.params.id || req.params.learningId || req.params.noteId || req.params.docId;
-    const item = await Model.findOne({ _id: itemId, owner: req.user._id });
-    if (!item) return res.status(404).json({ error: 'Not found' });
+    const itemId = req.params.id || req.params.learningId || req.params.noteId || req.params.docId || req.params.itemId;
+    
+    // Always check Item model first with strict user ownership
+    let item = await Item.findOne({ _id: itemId, owner: req.user._id });
+    if (!item && Model && Model !== Item) {
+      item = await Model.findOne({ _id: itemId, owner: req.user._id });
+    }
+    if (!item) return res.status(404).json({ error: 'Item not found or unauthorized' });
 
-    const updated = await Model.findOneAndUpdate(
-      { _id: itemId, owner: req.user._id },
-      { $set: { isPinned: !item.isPinned } },
-      { new: true }
-    );
+    const newPinned = !item.isPinned;
 
-    return res.json({ isPinned: updated.isPinned, item: updated });
+    await Item.updateOne({ _id: itemId, owner: req.user._id }, { $set: { isPinned: newPinned } });
+    if (Model && Model !== Item) {
+      await Model.updateOne({ _id: itemId, owner: req.user._id }, { $set: { isPinned: newPinned } }).catch(() => {});
+    }
+
+    const updated = await Item.findOne({ _id: itemId, owner: req.user._id }).lean();
+    return res.json({ isPinned: newPinned, item: updated });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }

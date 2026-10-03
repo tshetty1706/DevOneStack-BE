@@ -1,4 +1,4 @@
-import Prompt from '../models/Prompt.js';
+import Item from '../models/Item.js';
 import DOMPurify from 'isomorphic-dompurify';
 import {
   verifySpaceOwnership,
@@ -14,16 +14,30 @@ export const listPrompts = async (req, res) => {
     const { spaceId } = req.params;
     const { lastId, tag } = req.query;
 
-    const filter = { spaceId, owner: req.user._id };
+    const filter = { spaceId, owner: req.user._id, type: 'prompt' };
     if (lastId) filter._id = { $gt: lastId };
-    if (tag)    filter.tags = tag;
+    if (tag) filter.tags = tag.toLowerCase().trim();
 
-    const prompts = await Prompt.find(filter)
-      .sort({ createdAt: -1 })
-      .limit(20)
-      .select('-__v');
+    const items = await Item.find(filter)
+      .sort({ isPinned: -1, updatedAt: -1 })
+      .limit(50)
+      .lean();
 
-    res.json({ prompts, hasMore: prompts.length === 20 });
+    const prompts = items.map(i => ({
+      _id: i._id,
+      title: i.title,
+      body: i.content,
+      content: i.content,
+      caption: i.caption,
+      model: i.model,
+      tags: i.tags,
+      isPinned: i.isPinned,
+      folderId: i.folderId,
+      createdAt: i.createdAt,
+      updatedAt: i.updatedAt,
+    }));
+
+    res.json({ prompts, hasMore: items.length === 50 });
   } catch (err) {
     sendError(res, err, 'Failed to load prompts');
   }
@@ -32,24 +46,27 @@ export const listPrompts = async (req, res) => {
 // POST /api/spaces/:spaceId/prompts
 export const createPrompt = async (req, res) => {
   try {
-    const { title, body, caption, tags = [], model } = req.body;
+    const { title, body, content, caption, tags = [], model, folderId } = req.body;
     const { spaceId } = req.params;
 
-    if (!body) return res.status(400).json({ error: 'Prompt body is required' });
+    const promptText = (body || content || '').trim();
+    if (!promptText) return res.status(400).json({ error: 'Prompt body is required' });
 
     const space = await verifySpaceOwnership(spaceId, req.user._id);
     if (!space) return res.status(404).json({ error: 'Space not found' });
 
-    const cleanBody = DOMPurify.sanitize(body);
+    const cleanBody = DOMPurify.sanitize(promptText);
 
-    const prompt = await Prompt.create({
+    const item = await Item.create({
       owner: req.user._id,
       spaceId,
-      title: title.trim(),
-      body: cleanBody,
-      caption: caption?.trim(),
+      folderId: folderId || null,
+      title: title ? title.trim() : 'Untitled Prompt',
+      type: 'prompt',
+      content: cleanBody,
+      caption: caption?.trim() || '',
+      model: model?.trim() || '',
       tags: parseTags(tags),
-      model: model?.trim(),
     });
 
     await updateSpaceResourceCount(spaceId, 'promptsCount', 1);
@@ -57,11 +74,25 @@ export const createPrompt = async (req, res) => {
     await logUserHistory(
       req.user._id,
       'created_prompt',
-      `Saved prompt "${prompt.title}"`,
-      { spaceId, promptId: prompt._id }
+      `Saved prompt "${item.title}"`,
+      { spaceId, promptId: item._id }
     );
 
-    res.status(201).json({ prompt });
+    res.status(201).json({
+      prompt: {
+        _id: item._id,
+        title: item.title,
+        body: item.content,
+        content: item.content,
+        caption: item.caption,
+        model: item.model,
+        tags: item.tags,
+        isPinned: item.isPinned,
+        folderId: item.folderId,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+      }
+    });
   } catch (err) {
     sendError(res, err);
   }
@@ -70,35 +101,39 @@ export const createPrompt = async (req, res) => {
 // PATCH /api/spaces/:spaceId/prompts/:id
 export const updatePrompt = async (req, res) => {
   try {
-    const { title, body, caption, tags, model } = req.body;
-    const update = {};
-    if (title !== undefined)   update.title = title.trim();
-    if (body !== undefined)    update.body = DOMPurify.sanitize(body);
-    if (caption !== undefined) update.caption = caption.trim();
-    if (tags !== undefined)     update.tags = parseTags(tags);
-    if (model !== undefined)   update.model = model.trim();
+    const { title, body, content, caption, tags, model, folderId } = req.body;
+    const { spaceId, id } = req.params;
 
-    const prompt = await Prompt.findOneAndUpdate(
-      { _id: req.params.id, owner: req.user._id },
-      update,
-      { new: true }
-    );
-    if (!prompt) return res.status(404).json({ error: 'Prompt not found' });
+    const space = await verifySpaceOwnership(spaceId, req.user._id);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
 
-    res.json({ prompt });
-  } catch (err) {
-    sendError(res, err);
-  }
-};
+    const item = await Item.findOne({ _id: id, spaceId, owner: req.user._id, type: 'prompt' });
+    if (!item) return res.status(404).json({ error: 'Prompt not found' });
 
-// POST /api/spaces/:spaceId/prompts/:id/use
-export const usePrompt = async (req, res) => {
-  try {
-    await Prompt.findOneAndUpdate(
-      { _id: req.params.id, owner: req.user._id },
-      { $inc: { usedCount: 1 } }
-    );
-    res.json({ message: 'ok' });
+    if (title !== undefined) item.title = title.trim();
+    if (body !== undefined || content !== undefined) item.content = DOMPurify.sanitize(body || content);
+    if (caption !== undefined) item.caption = caption.trim();
+    if (tags !== undefined) item.tags = parseTags(tags);
+    if (model !== undefined) item.model = model.trim();
+    if (folderId !== undefined) item.folderId = (folderId && folderId !== 'root') ? folderId : null;
+
+    await item.save();
+
+    res.json({
+      prompt: {
+        _id: item._id,
+        title: item.title,
+        body: item.content,
+        content: item.content,
+        caption: item.caption,
+        model: item.model,
+        tags: item.tags,
+        isPinned: item.isPinned,
+        folderId: item.folderId,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+      }
+    });
   } catch (err) {
     sendError(res, err);
   }
@@ -107,15 +142,17 @@ export const usePrompt = async (req, res) => {
 // DELETE /api/spaces/:spaceId/prompts/:id
 export const deletePrompt = async (req, res) => {
   try {
-    const prompt = await Prompt.findOneAndDelete({
-      _id: req.params.id,
-      owner: req.user._id
-    });
-    if (!prompt) return res.status(404).json({ error: 'Not found' });
+    const { spaceId, id } = req.params;
 
-    await updateSpaceResourceCount(prompt.spaceId, 'promptsCount', -1);
+    const space = await verifySpaceOwnership(spaceId, req.user._id);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
 
-    res.json({ message: 'Deleted' });
+    const item = await Item.findOneAndDelete({ _id: id, spaceId, owner: req.user._id, type: 'prompt' });
+    if (!item) return res.status(404).json({ error: 'Prompt not found' });
+
+    await updateSpaceResourceCount(spaceId, 'promptsCount', -1);
+
+    res.json({ message: 'Prompt deleted' });
   } catch (err) {
     sendError(res, err);
   }
@@ -127,19 +164,69 @@ export const searchPrompts = async (req, res) => {
     const { q } = req.query;
     const { spaceId } = req.params;
 
-    const prompts = await Prompt.find({
+    const items = await Item.find({
       spaceId,
       owner: req.user._id,
+      type: 'prompt',
       $or: [
-        { title:   { $regex: q, $options: 'i' } },
-        { body:    { $regex: q, $options: 'i' } },
+        { title: { $regex: q, $options: 'i' } },
+        { content: { $regex: q, $options: 'i' } },
         { caption: { $regex: q, $options: 'i' } },
-        { tags:    { $regex: q, $options: 'i' } },
+        { model: { $regex: q, $options: 'i' } },
+        { tags: { $regex: q, $options: 'i' } },
       ]
-    }).limit(20).select('-__v');
+    }).limit(20).lean();
+
+    const prompts = items.map(i => ({
+      _id: i._id,
+      title: i.title,
+      body: i.content,
+      content: i.content,
+      caption: i.caption,
+      model: i.model,
+      tags: i.tags,
+      isPinned: i.isPinned,
+      folderId: i.folderId,
+      createdAt: i.createdAt,
+      updatedAt: i.updatedAt,
+    }));
 
     res.json({ prompts, count: prompts.length });
   } catch (err) {
     sendError(res, err);
   }
 };
+
+// POST /api/spaces/:spaceId/prompts/:id/use
+export const usePrompt = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const item = await Item.findOne({ _id: id, owner: req.user._id, type: 'prompt' });
+    if (!item) return res.status(404).json({ error: 'Prompt not found' });
+
+    res.json({ message: 'Used prompt recorded' });
+  } catch (err) {
+    sendError(res, err);
+  }
+};
+
+// PATCH /api/spaces/:spaceId/prompts/:id/pin
+export const togglePin = async (req, res) => {
+  try {
+    const { spaceId, id } = req.params;
+
+    const space = await verifySpaceOwnership(spaceId, req.user._id);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
+
+    const item = await Item.findOne({ _id: id, spaceId, owner: req.user._id, type: 'prompt' });
+    if (!item) return res.status(404).json({ error: 'Prompt not found' });
+
+    item.isPinned = !item.isPinned;
+    await item.save();
+
+    res.json({ isPinned: item.isPinned });
+  } catch (err) {
+    sendError(res, err);
+  }
+};
+

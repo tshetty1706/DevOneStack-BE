@@ -1,4 +1,4 @@
-import Community from '../models/Community.js';
+import Item from '../models/Item.js';
 import {
   verifySpaceOwnership,
   updateSpaceResourceCount,
@@ -7,13 +7,16 @@ import {
   sendError,
 } from '../utils/spaceHelpers.js';
 
-const detectPlatform = (url) => {
-  if (/discord\.(gg|com)/.test(url)) return 'discord';
-  if (/reddit\.com/.test(url)) return 'reddit';
-  if (/(twitter|x)\.com/.test(url)) return 'twitter';
-  if (/youtube\.com/.test(url)) return 'youtube';
-  if (/github\.com/.test(url)) return 'github';
-  if (/slack\.com/.test(url)) return 'slack';
+const detectPlatform = (url = '') => {
+  const lower = url.toLowerCase();
+  if (lower.includes('discord.gg') || lower.includes('discord.com')) return 'discord';
+  if (lower.includes('reddit.com')) return 'reddit';
+  if (lower.includes('slack.com')) return 'slack';
+  if (lower.includes('twitter.com') || lower.includes('x.com')) return 'twitter';
+  if (lower.includes('youtube.com')) return 'youtube';
+  if (lower.includes('github.com')) return 'github';
+  if (lower.includes('t.me')) return 'telegram';
+  if (lower.includes('whatsapp.com')) return 'whatsapp';
   return 'other';
 };
 
@@ -23,16 +26,31 @@ export const listCommunities = async (req, res) => {
     const { spaceId } = req.params;
     const { lastId, tag } = req.query;
 
-    const filter = { spaceId, owner: req.user._id };
+    const filter = { spaceId, owner: req.user._id, type: 'community' };
     if (lastId) filter._id = { $gt: lastId };
-    if (tag)    filter.tags = tag;
+    if (tag) filter.tags = tag.toLowerCase().trim();
 
-    const communities = await Community.find(filter)
-      .sort({ createdAt: -1 })
-      .limit(20)
-      .select('-__v');
+    const items = await Item.find(filter)
+      .sort({ isPinned: -1, updatedAt: -1 })
+      .limit(50)
+      .lean();
 
-    res.json({ communities, hasMore: communities.length === 20 });
+    const communities = items.map(i => ({
+      _id: i._id,
+      name: i.title,
+      title: i.title,
+      url: i.url,
+      platform: i.platform || 'other',
+      caption: i.caption,
+      memberCount: i.memberCount,
+      tags: i.tags,
+      isPinned: i.isPinned,
+      folderId: i.folderId,
+      createdAt: i.createdAt,
+      updatedAt: i.updatedAt,
+    }));
+
+    res.json({ communities, hasMore: items.length === 50 });
   } catch (err) {
     sendError(res, err, 'Failed to load communities');
   }
@@ -41,23 +59,29 @@ export const listCommunities = async (req, res) => {
 // POST /api/spaces/:spaceId/communities
 export const createCommunity = async (req, res) => {
   try {
-    const { name, url, platform, caption, tags = [], memberCount } = req.body;
+    const { name, title, url, platform, caption, tags = [], memberCount, folderId } = req.body;
     const { spaceId } = req.params;
+
+    const commTitle = (title || name || '').trim();
+    if (!commTitle) return res.status(400).json({ error: 'Community name/title is required' });
+    if (!url) return res.status(400).json({ error: 'Community URL is required' });
 
     const space = await verifySpaceOwnership(spaceId, req.user._id);
     if (!space) return res.status(404).json({ error: 'Space not found' });
 
     const detectedPlatform = platform || detectPlatform(url);
 
-    const community = await Community.create({
+    const item = await Item.create({
       owner: req.user._id,
       spaceId,
-      name: name.trim(),
+      folderId: folderId || null,
+      title: commTitle,
+      type: 'community',
       url: url.trim(),
       platform: detectedPlatform,
-      caption: caption?.trim(),
+      caption: caption?.trim() || '',
+      memberCount: memberCount?.trim() || '',
       tags: parseTags(tags),
-      memberCount: memberCount?.trim(),
     });
 
     await updateSpaceResourceCount(spaceId, 'communitiesCount', 1);
@@ -65,11 +89,26 @@ export const createCommunity = async (req, res) => {
     await logUserHistory(
       req.user._id,
       'created_community',
-      `Added community link "${community.name}"`,
-      { spaceId, communityId: community._id }
+      `Added community link "${item.title}"`,
+      { spaceId, communityId: item._id }
     );
 
-    res.status(201).json({ community });
+    res.status(201).json({
+      community: {
+        _id: item._id,
+        name: item.title,
+        title: item.title,
+        url: item.url,
+        platform: item.platform,
+        caption: item.caption,
+        memberCount: item.memberCount,
+        tags: item.tags,
+        isPinned: item.isPinned,
+        folderId: item.folderId,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+      }
+    });
   } catch (err) {
     sendError(res, err);
   }
@@ -78,29 +117,50 @@ export const createCommunity = async (req, res) => {
 // PATCH /api/spaces/:spaceId/communities/:id
 export const updateCommunity = async (req, res) => {
   try {
-    const { name, url, platform, caption, tags, memberCount } = req.body;
-    const update = {};
-    if (name !== undefined)        update.name = name.trim();
-    if (caption !== undefined)     update.caption = caption.trim();
-    if (platform !== undefined)    update.platform = platform;
-    if (memberCount !== undefined) update.memberCount = memberCount.trim();
-    if (tags !== undefined)        update.tags = parseTags(tags);
+    const { name, title, url, platform, caption, tags, memberCount, folderId } = req.body;
+    const { spaceId, id } = req.params;
+
+    const space = await verifySpaceOwnership(spaceId, req.user._id);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
+
+    const item = await Item.findOne({ _id: id, spaceId, owner: req.user._id, type: 'community' });
+    if (!item) return res.status(404).json({ error: 'Community not found' });
+
+    if (name !== undefined || title !== undefined) item.title = (title || name).trim();
+    if (caption !== undefined) item.caption = caption.trim();
+    if (memberCount !== undefined) item.memberCount = memberCount.trim();
+    if (tags !== undefined) item.tags = parseTags(tags);
+    if (folderId !== undefined) item.folderId = (folderId && folderId !== 'root') ? folderId : null;
 
     if (url !== undefined) {
-      update.url = url.trim();
+      item.url = url.trim();
       if (platform === undefined) {
-        update.platform = detectPlatform(url.trim());
+        item.platform = detectPlatform(url.trim());
+      } else {
+        item.platform = platform;
       }
+    } else if (platform !== undefined) {
+      item.platform = platform;
     }
 
-    const community = await Community.findOneAndUpdate(
-      { _id: req.params.id, owner: req.user._id },
-      update,
-      { new: true }
-    );
-    if (!community) return res.status(404).json({ error: 'Community not found' });
+    await item.save();
 
-    res.json({ community });
+    res.json({
+      community: {
+        _id: item._id,
+        name: item.title,
+        title: item.title,
+        url: item.url,
+        platform: item.platform,
+        caption: item.caption,
+        memberCount: item.memberCount,
+        tags: item.tags,
+        isPinned: item.isPinned,
+        folderId: item.folderId,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+      }
+    });
   } catch (err) {
     sendError(res, err);
   }
@@ -109,15 +169,17 @@ export const updateCommunity = async (req, res) => {
 // DELETE /api/spaces/:spaceId/communities/:id
 export const deleteCommunity = async (req, res) => {
   try {
-    const community = await Community.findOneAndDelete({
-      _id: req.params.id,
-      owner: req.user._id
-    });
-    if (!community) return res.status(404).json({ error: 'Not found' });
+    const { spaceId, id } = req.params;
 
-    await updateSpaceResourceCount(community.spaceId, 'communitiesCount', -1);
+    const space = await verifySpaceOwnership(spaceId, req.user._id);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
 
-    res.json({ message: 'Deleted' });
+    const item = await Item.findOneAndDelete({ _id: id, spaceId, owner: req.user._id, type: 'community' });
+    if (!item) return res.status(404).json({ error: 'Community not found' });
+
+    await updateSpaceResourceCount(spaceId, 'communitiesCount', -1);
+
+    res.json({ message: 'Community link removed' });
   } catch (err) {
     sendError(res, err);
   }
@@ -129,18 +191,57 @@ export const searchCommunities = async (req, res) => {
     const { q } = req.query;
     const { spaceId } = req.params;
 
-    const communities = await Community.find({
+    const items = await Item.find({
       spaceId,
       owner: req.user._id,
+      type: 'community',
       $or: [
-        { name:    { $regex: q, $options: 'i' } },
+        { title: { $regex: q, $options: 'i' } },
         { caption: { $regex: q, $options: 'i' } },
-        { tags:    { $regex: q, $options: 'i' } },
+        { url: { $regex: q, $options: 'i' } },
+        { platform: { $regex: q, $options: 'i' } },
+        { tags: { $regex: q, $options: 'i' } },
       ]
-    }).limit(20).select('-__v');
+    }).limit(20).lean();
+
+    const communities = items.map(i => ({
+      _id: i._id,
+      name: i.title,
+      title: i.title,
+      url: i.url,
+      platform: i.platform || 'other',
+      caption: i.caption,
+      memberCount: i.memberCount,
+      tags: i.tags,
+      isPinned: i.isPinned,
+      folderId: i.folderId,
+      createdAt: i.createdAt,
+      updatedAt: i.updatedAt,
+    }));
 
     res.json({ communities, count: communities.length });
   } catch (err) {
     sendError(res, err);
   }
 };
+
+// PATCH /api/spaces/:spaceId/communities/:id/pin
+export const togglePin = async (req, res) => {
+  try {
+    const { spaceId, id } = req.params;
+
+    const space = await verifySpaceOwnership(spaceId, req.user._id);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
+
+    const item = await Item.findOne({ _id: id, spaceId, owner: req.user._id, type: 'community' });
+    if (!item) return res.status(404).json({ error: 'Community not found' });
+
+    item.isPinned = !item.isPinned;
+    await item.save();
+
+    res.json({ isPinned: item.isPinned });
+  } catch (err) {
+    sendError(res, err);
+  }
+};
+

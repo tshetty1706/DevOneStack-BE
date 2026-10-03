@@ -8,13 +8,14 @@ import { togglePin } from '../utils/pinSync.js';
 
 const router = express.Router({ mergeParams: true });
 
+router.get('/:docId/file', ctrl.getDocFile);
+
 router.use(protect);
 
 router.get('/',                  ctrl.listDocs);
 router.post('/url',              ctrl.addUrlDoc);
 router.post('/upload',           upload.single('file'), ctrl.uploadDoc);
 router.get('/search',            ctrl.searchDocs);
-router.get('/:docId/file', protect, ctrl.getDocFile);
 router.patch('/:docId/pin',      togglePin(Doc));
 router.patch('/:docId',          ctrl.updateDoc);
 router.delete('/:docId',         ctrl.deleteDoc);
