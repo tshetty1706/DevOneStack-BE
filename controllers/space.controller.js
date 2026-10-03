@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import Space from "../models/Space.js";
 import History from "../models/History.js";
 import Learning from "../models/Learning.js";
@@ -9,36 +10,51 @@ import Prompt from "../models/Prompt.js";
 import Community from "../models/Community.js";
 import Folder from "../models/Folder.js";
 import Item from "../models/Item.js";
+import SpaceView from "../models/SpaceView.js";
 import deleteFromCloudinary from "../utils/deleteFromCloudinary.js";
 import uploadToCloudinary from "../utils/uploadToCloudinary.js";
 import { logUserHistory } from "../utils/spaceHelpers.js";
+import { can } from "../utils/authorization.js";
+import { scanForSecrets } from "../utils/secretScanner.js";
+import { createInboxNotification } from "../utils/notificationService.js";
 
+/**
+ * GET /api/spaces
+ * List spaces with proper authorization and visibility filtering.
+ */
 export const getSpaces = async (req, res) => {
   try {
     const ownerId = req.user._id;
     const { tab, visibility } = req.query;
 
-    let query = { owner: ownerId };
+    let query = {};
 
     if (tab === 'starred') {
-      query = { starredBy: ownerId };
+      query = { starredBy: ownerId, visibility: 'public' };
     } else if (tab === 'archived') {
       query = { owner: ownerId, isArchived: true };
     } else if (tab === 'shared') {
-      query = { owner: { $ne: ownerId }, visibility: 'public' };
+      // Spaces where user is a collaborator or public spaces
+      query = {
+        $or: [
+          { 'collaborators.user': ownerId },
+          { owner: { $ne: ownerId }, visibility: 'public' }
+        ]
+      };
     } else if (tab === 'mine') {
       query = { owner: ownerId, isArchived: { $ne: true } };
     } else {
-      // 'all' or default
+      // 'all' or default -> user's owned spaces and collaborated spaces
       query = {
         $or: [
           { owner: ownerId },
-          { starredBy: ownerId }
+          { 'collaborators.user': ownerId },
+          { starredBy: ownerId, visibility: 'public' }
         ]
       };
     }
 
-    if (visibility && ['public', 'private', 'unlisted'].includes(visibility)) {
+    if (visibility && ['public', 'private'].includes(visibility)) {
       query.visibility = visibility;
     }
 
@@ -54,21 +70,45 @@ export const getSpaces = async (req, res) => {
   }
 };
 
+/**
+ * GET /api/spaces/:id
+ * Fetch a single space. Returns 404 if unauthorized or private.
+ */
 export const getSpace = async (req, res) => {
   try {
     const { id } = req.params;
-    // Allow viewing if owner, or if public/unlisted
-    const space = await Space.findOne({
-      _id: id,
-      $or: [
-        { owner: req.user._id },
-        { visibility: { $in: ['public', 'unlisted'] } }
-      ]
-    }).populate('owner', 'username displayName avatarUrl').lean();
+    const space = await Space.findById(id)
+      .populate('owner', 'username displayName avatarUrl')
+      .populate('collaborators.user', 'username displayName avatarUrl')
+      .lean();
 
     if (!space) {
       return res.status(404).json({ error: "Space not found" });
     }
+
+    // Check central authorization
+    if (!can(req.user, 'view', space)) {
+      return res.status(404).json({ error: "Space not found" });
+    }
+
+    // Track daily view deduplication for public spaces (exclude owner)
+    if (space.visibility === 'public') {
+      const isOwner = req.user?._id && space.owner?._id && req.user._id.toString() === space.owner._id.toString();
+      if (!isOwner) {
+        const viewerKey = req.user?._id ? req.user._id.toString() : (req.ip || 'guest');
+        const viewDate = new Date().toISOString().slice(0, 10);
+        try {
+          const viewRecord = await SpaceView.create({ space: id, viewerKey, viewDate });
+          if (viewRecord) {
+            await Space.findByIdAndUpdate(id, { $inc: { viewsCount: 1 } });
+            space.viewsCount = (space.viewsCount || 0) + 1;
+          }
+        } catch (dupErr) {
+          // Already viewed today, ignored
+        }
+      }
+    }
+
     return res.json(space);
   } catch (err) {
     console.error("getSpace error:", err);
@@ -76,9 +116,13 @@ export const getSpace = async (req, res) => {
   }
 };
 
+/**
+ * POST /api/spaces
+ * Create a new space (starts private by default, public/private enum only).
+ */
 export const createSpace = async (req, res) => {
   try {
-    const { name, description, tool, thumbnail, visibility, tags, iconKey, template, enabledModules, readme } = req.body;
+    const { name, description, tool, thumbnail, visibility, tags, iconKey, template, enabledModules, readme, allowCloning } = req.body;
 
     const trimmedName = (name || '').trim();
     if (!trimmedName) {
@@ -93,13 +137,18 @@ export const createSpace = async (req, res) => {
       return res.status(400).json({ error: "Description must be 500 characters or less" });
     }
 
-    const validVisibilities = ['public', 'private', 'unlisted'];
-    const finalVisibility = validVisibilities.includes(visibility) ? visibility : 'private';
+    // Strict 2-state visibility
+    const finalVisibility = visibility === 'public' ? 'public' : 'private';
 
-    // Determine icon and iconKey based on request body or tool or name
-    const finalIconKey = iconKey || getIconKeyByName(tool || trimmedName);
+    if (finalVisibility === 'public') {
+      const scanResult = scanForSecrets({ name: trimmedName, description: trimmedDescription, readme });
+      if (scanResult.hasSecrets) {
+        return res.status(400).json({
+          error: `Potential secrets detected (${scanResult.findings.join(', ')}). Please remove credentials before creating a public Space.`
+        });
+      }
+    }
 
-    // Parse tags if it's a comma-separated string or array
     let parsedTags = [];
     if (Array.isArray(tags)) {
       parsedTags = tags.map(t => typeof t === 'string' ? t.trim() : '').filter(Boolean);
@@ -107,7 +156,6 @@ export const createSpace = async (req, res) => {
       parsedTags = tags.split(',').map(t => t.trim()).filter(Boolean);
     }
 
-    // Parse enabledModules: Overview and Explorer are ALWAYS first and fixed
     let finalModules = ['overview', 'explorer'];
     if (Array.isArray(enabledModules) && enabledModules.length > 0) {
       const sanitized = enabledModules.map(m => typeof m === 'string' ? m.trim().toLowerCase() : '').filter(Boolean);
@@ -123,8 +171,9 @@ export const createSpace = async (req, res) => {
       tool: (tool || '').trim(),
       thumbnail: (thumbnail || '').trim(),
       visibility: finalVisibility,
-      icon: finalIconKey, // legacy support
-      iconKey: finalIconKey,
+      allowCloning: allowCloning !== false,
+      icon: iconKey || 'ri-folder-line',
+      iconKey: iconKey || 'ri-folder-line',
       tags: parsedTags,
       template: (template || 'blank').trim(),
       enabledModules: finalModules,
@@ -135,6 +184,7 @@ export const createSpace = async (req, res) => {
       contributorsCount: 1,
       progress: 0,
       docsCount: 0,
+      notesCount: 0,
       learningsCount: 0,
       snippetsCount: 0,
       reposCount: 0,
@@ -144,7 +194,6 @@ export const createSpace = async (req, res) => {
 
     const populatedSpace = await Space.findById(space._id).populate('owner', 'username displayName avatarUrl');
 
-    // Log to history
     await History.create({
       owner: req.user._id,
       action: 'created_space',
@@ -159,11 +208,42 @@ export const createSpace = async (req, res) => {
   }
 };
 
-// PATCH /api/spaces/:id
+/**
+ * PATCH /api/spaces/:id
+ * Update a space with secret scanning on visibility changes.
+ */
 export const updateSpace = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, description, tool, thumbnail, visibility, tags, iconKey, isPinned, isArchived, template, enabledModules, readme } = req.body;
+    const existingSpace = await Space.findById(id);
+
+    if (!existingSpace) {
+      return res.status(404).json({ error: "Space not found" });
+    }
+
+    if (!can(req.user, 'manage_space', existingSpace)) {
+      return res.status(404).json({ error: "Space not found" });
+    }
+
+    const {
+      name,
+      description,
+      tool,
+      thumbnail,
+      visibility,
+      tags,
+      iconKey,
+      isPinned,
+      isArchived,
+      template,
+      enabledModules,
+      readme,
+      allowCloning,
+      requestLinkEnabled,
+      requestDescription,
+      regenerateRequestToken
+    } = req.body;
+
     const update = {};
 
     if (name !== undefined) {
@@ -180,9 +260,44 @@ export const updateSpace = async (req, res) => {
     if (thumbnail !== undefined) {
       update.thumbnail = thumbnail.trim();
     }
-    if (visibility !== undefined && ['public', 'private', 'unlisted'].includes(visibility)) {
+    if (allowCloning !== undefined) {
+      update.allowCloning = Boolean(allowCloning);
+    }
+    if (requestDescription !== undefined) {
+      update.requestDescription = String(requestDescription).trim();
+    }
+
+    // Request link token management
+    if (requestLinkEnabled !== undefined) {
+      update.requestLinkEnabled = Boolean(requestLinkEnabled);
+      if (update.requestLinkEnabled && (!existingSpace.requestLinkToken || regenerateRequestToken)) {
+        update.requestLinkToken = crypto.randomBytes(16).toString('hex');
+      }
+    } else if (regenerateRequestToken) {
+      update.requestLinkToken = crypto.randomBytes(16).toString('hex');
+    }
+
+    // Visibility update & Secret Scanning
+    if (visibility !== undefined && ['public', 'private'].includes(visibility)) {
+      if (visibility === 'public' && existingSpace.visibility !== 'public') {
+        // Scan space metadata and all items
+        const items = await Item.find({ spaceId: id }).select('title content preview codeExample url').lean();
+        const scanPayload = {
+          name: update.name || existingSpace.name,
+          description: update.description || existingSpace.description,
+          readme: readme !== undefined ? readme : existingSpace.readme,
+          items
+        };
+        const scanResult = scanForSecrets(scanPayload);
+        if (scanResult.hasSecrets) {
+          return res.status(400).json({
+            error: `Cannot make Space public: potential secrets or credentials detected (${scanResult.findings.join(', ')}). Please remove sensitive data first.`
+          });
+        }
+      }
       update.visibility = visibility;
     }
+
     if (isPinned !== undefined) {
       update.isPinned = Boolean(isPinned);
     }
@@ -204,11 +319,7 @@ export const updateSpace = async (req, res) => {
 
     if (iconKey !== undefined) {
       update.iconKey = iconKey;
-      update.icon = iconKey; // legacy support
-    } else if (name !== undefined || tool !== undefined) {
-      const autoIconKey = getIconKeyByName(tool || name);
-      update.iconKey = autoIconKey;
-      update.icon = autoIconKey;
+      update.icon = iconKey;
     }
 
     if (tags !== undefined) {
@@ -217,15 +328,11 @@ export const updateSpace = async (req, res) => {
         : (typeof tags === 'string' ? tags.split(',').map(t => t.trim()).filter(Boolean) : []);
     }
 
-    const space = await Space.findOneAndUpdate(
-      { _id: id, owner: req.user._id },
+    const space = await Space.findByIdAndUpdate(
+      id,
       update,
       { new: true, runValidators: true }
-    ).populate('owner', 'username displayName avatarUrl');
-
-    if (!space) {
-      return res.status(404).json({ error: "Space not found" });
-    }
+    ).populate('owner', 'username displayName avatarUrl').populate('collaborators.user', 'username displayName avatarUrl');
 
     if (readme !== undefined) {
       await logUserHistory(req.user._id, 'updated_readme', `Updated Space README`, { spaceId: id });
@@ -242,7 +349,10 @@ export const updateSpace = async (req, res) => {
   }
 };
 
-// POST /api/spaces/:id/star
+/**
+ * POST /api/spaces/:id/star
+ * Toggle star on public spaces only.
+ */
 export const toggleStarSpace = async (req, res) => {
   try {
     const { id } = req.params;
@@ -251,6 +361,16 @@ export const toggleStarSpace = async (req, res) => {
     const space = await Space.findById(id);
     if (!space) {
       return res.status(404).json({ error: "Space not found" });
+    }
+
+    // Only public spaces can be starred
+    if (space.visibility !== 'public') {
+      return res.status(400).json({ error: "Private spaces cannot be starred." });
+    }
+
+    // Cannot star own space
+    if (space.owner.toString() === userId.toString()) {
+      return res.status(400).json({ error: "You cannot star your own space." });
     }
 
     const isStarred = space.starredBy && space.starredBy.some(s => s.toString() === userId.toString());
@@ -274,9 +394,21 @@ export const toggleStarSpace = async (req, res) => {
         },
         { new: true }
       ).populate('owner', 'username displayName avatarUrl');
+
+      // Dispatch notification to Space owner
+      await createInboxNotification({
+        recipient: space.owner,
+        sender: userId,
+        type: 'notification',
+        category: 'space_starred',
+        data: {
+          spaceId: space._id,
+          spaceName: space.name,
+          text: `starred your Space "${space.name}"`
+        }
+      });
     }
 
-    // Ensure starsCount doesn't go below 0
     if (updatedSpace.starsCount < 0) {
       updatedSpace.starsCount = 0;
       await updatedSpace.save();
@@ -289,24 +421,27 @@ export const toggleStarSpace = async (req, res) => {
   }
 };
 
-// DELETE /api/spaces/:id
+/**
+ * DELETE /api/spaces/:id
+ * Delete space and clean up items and Cloudinary assets.
+ */
 export const deleteSpace = async (req, res) => {
   try {
     const { id: spaceId } = req.params;
     const owner = req.user._id;
 
-    const space = await Space.findOneAndDelete({ _id: spaceId, owner });
+    const space = await Space.findOne({ _id: spaceId, owner });
     if (!space) {
       return res.status(404).json({ error: "Space not found" });
     }
 
-    // Get items with Cloudinary assets for cleanup
+    await Space.findByIdAndDelete(spaceId);
+
     const cloudinaryItems = await Item.find({
       spaceId,
       cloudinaryPublicId: { $exists: true, $ne: '' }
     }).select('cloudinaryPublicId docType type').lean();
 
-    // Delete everything in parallel
     await Promise.all([
       Folder.deleteMany({ spaceId }),
       Item.deleteMany({ spaceId }),
@@ -320,7 +455,6 @@ export const deleteSpace = async (req, res) => {
       History.deleteMany({ 'meta.spaceId': spaceId }),
     ]);
 
-    // Delete Cloudinary files for this space
     await Promise.allSettled(
       cloudinaryItems.map(item =>
         deleteFromCloudinary(
@@ -337,7 +471,9 @@ export const deleteSpace = async (req, res) => {
   }
 };
 
-// PATCH /api/spaces/:spaceId/recount
+/**
+ * PATCH /api/spaces/:spaceId/recount
+ */
 export const recountSpace = async (req, res) => {
   try {
     const { spaceId } = req.params;
@@ -379,7 +515,9 @@ export const recountSpace = async (req, res) => {
   }
 };
 
-// POST /api/spaces/upload-thumbnail
+/**
+ * POST /api/spaces/upload-thumbnail
+ */
 export const uploadSpaceThumbnail = async (req, res) => {
   try {
     const file = req.file;
@@ -392,7 +530,6 @@ export const uploadSpaceThumbnail = async (req, res) => {
       return res.status(400).json({ error: "Only image files (JPEG, PNG, WEBP, GIF) are supported." });
     }
 
-    // Limit thumbnail to max 10MB
     if (file.size > 10 * 1024 * 1024) {
       return res.status(400).json({ error: "Thumbnail file size cannot exceed 10MB." });
     }
