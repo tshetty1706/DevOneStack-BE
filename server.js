@@ -20,9 +20,24 @@ import tagRoutes from "./routes/tag.routes.js";
 import dashboardRoutes from "./routes/dashboard.routes.js";
 import folderRoutes from "./routes/folder.routes.js";
 import itemRoutes from "./routes/item.routes.js";
+import cloneRoutes from "./routes/clone.routes.js";
+import collaborationRoutes from "./routes/collaboration.routes.js";
+import reportRoutes from "./routes/report.routes.js";
+import Space from "./models/Space.js";
 import path from "path";
-// Connect to MongoDB Atlas
-connectDB();
+
+// Connect to MongoDB Atlas and perform migration
+connectDB().then(async () => {
+  try {
+    // Migration: ensure any legacy unlisted spaces become private
+    const result = await Space.updateMany({ visibility: 'unlisted' }, { $set: { visibility: 'private' } });
+    if (result.modifiedCount > 0) {
+      console.log(`🔒 Migrated ${result.modifiedCount} legacy 'unlisted' spaces to 'private'.`);
+    }
+  } catch (migErr) {
+    console.warn("Visibility migration notice:", migErr.message);
+  }
+});
 
 const app = express();
 
@@ -64,6 +79,10 @@ app.use(passport.initialize());
 // API Routes
 app.use("/api/auth", authRoutes);
 app.use("/api/inbox", inboxRoutes);
+app.use("/api/community", communityRoutes);
+app.use("/api/clone", cloneRoutes);
+app.use("/api/collaborators", collaborationRoutes);
+app.use("/api/reports", reportRoutes);
 app.use("/api/boilerplates", boilerplateRoutes);
 app.use("/api/history", historyRoutes);
 app.use("/api/dashboard", dashboardRoutes);
