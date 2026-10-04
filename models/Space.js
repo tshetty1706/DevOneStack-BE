@@ -59,6 +59,8 @@ const SpaceSchema = new mongoose.Schema({
 
 SpaceSchema.index({ owner: 1, isPinned: -1, updatedAt: -1 });
 SpaceSchema.index({ visibility: 1, updatedAt: -1 });
+SpaceSchema.index({ starredBy: 1, visibility: 1 });
+SpaceSchema.index({ visibility: 1, starsCount: -1, viewsCount: -1 });
 SpaceSchema.index({ 'collaborators.user': 1 });
 
 export default mongoose.model('Space', SpaceSchema);

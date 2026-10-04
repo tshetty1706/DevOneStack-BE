@@ -17,6 +17,7 @@ const ItemSchema = new Schema({
   caption:     { type: String, default: '', maxLength: 300 },
   tags:        [{ type: String, trim: true, maxLength: 50 }],
   isPinned:    { type: Boolean, default: false },
+  source:      { type: String, enum: ['user', 'clone', 'import', 'system'], default: 'user', index: true },
 
   // Specific content attributes
   docType:     { type: String, enum: ['url', 'pdf', 'image', 'markdown'], default: 'markdown' },

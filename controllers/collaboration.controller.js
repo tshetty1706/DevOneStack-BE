@@ -5,12 +5,62 @@ import { createInboxNotification } from "../utils/notificationService.js";
 import { can } from "../utils/authorization.js";
 
 /**
- * POST /api/collaborators/invite
+ * GET /api/spaces/:spaceId/collaborators
+ * or GET /api/collaborators/:spaceId
+ * Fetch collaborators and pending invites for a Space.
+ */
+export const getCollaborators = async (req, res) => {
+  try {
+    const spaceId = req.params.spaceId || req.query.spaceId;
+    const userId = req.user._id;
+
+    if (!spaceId) {
+      return res.status(400).json({ error: "Space ID is required." });
+    }
+
+    const space = await Space.findById(spaceId)
+      .populate('collaborators.user', 'username displayName avatarUrl bio role')
+      .populate('owner', 'username displayName avatarUrl')
+      .lean();
+
+    if (!space) {
+      return res.status(404).json({ error: "Space not found." });
+    }
+
+    if (!can(req.user, 'view', space)) {
+      return res.status(403).json({ error: "Unauthorized to view this Space." });
+    }
+
+    const isOwner = space.owner?._id?.toString() === userId.toString() || space.owner?.toString() === userId.toString();
+
+    let pendingInvites = [];
+    if (isOwner) {
+      pendingInvites = await CollaborationInvite.find({ space: space._id, status: 'pending' })
+        .populate('invitee', 'username displayName avatarUrl')
+        .lean();
+    }
+
+    return res.json({
+      collaborators: space.collaborators || [],
+      pendingInvites,
+      owner: space.owner,
+      maxCollaborators: 5,
+    });
+  } catch (err) {
+    console.error("getCollaborators error:", err);
+    return res.status(500).json({ error: "Failed to fetch collaborators." });
+  }
+};
+
+/**
+ * POST /api/spaces/:spaceId/collaborators/invite
+ * or POST /api/collaborators/invite
  * Owner invites a user by EXACT username only (max 5 collaborators per space).
  */
 export const inviteCollaborator = async (req, res) => {
   try {
-    const { spaceId, username, role = 'viewer' } = req.body;
+    const spaceId = req.params.spaceId || req.body.spaceId;
+    const { username, role = 'viewer' } = req.body;
     const userId = req.user._id;
 
     if (!spaceId || !username) {
@@ -36,8 +86,12 @@ export const inviteCollaborator = async (req, res) => {
       return res.status(400).json({ error: "Maximum limit of 5 collaborators reached for this Space." });
     }
 
-    // Lookup user by EXACT username (no fuzzy match)
-    const invitee = await User.findOne({ username: String(username).trim() }).select('_id username displayName');
+    // Lookup user by EXACT username (case-insensitive)
+    const cleanUsername = String(username).trim().replace(/^@/, '');
+    const invitee = await User.findOne({
+      username: { $regex: new RegExp(`^${cleanUsername.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}$`, 'i') }
+    }).select('_id username displayName');
+
     if (!invitee) {
       return res.status(404).json({ error: "User with this exact username was not found." });
     }
@@ -46,7 +100,7 @@ export const inviteCollaborator = async (req, res) => {
       return res.status(400).json({ error: "You are the owner of this Space." });
     }
 
-    const alreadyCollaborator = space.collaborators?.some(c => c.user.toString() === invitee._id.toString());
+    const alreadyCollaborator = space.collaborators?.some(c => (c.user?._id || c.user)?.toString() === invitee._id.toString());
     if (alreadyCollaborator) {
       return res.status(400).json({ error: "User is already a collaborator on this Space." });
     }
@@ -94,12 +148,14 @@ export const inviteCollaborator = async (req, res) => {
 };
 
 /**
- * DELETE /api/collaborators/:spaceId/:collaboratorUserId
+ * DELETE /api/spaces/:spaceId/collaborators/:userId
+ * or DELETE /api/collaborators/:spaceId/:collaboratorUserId
  * Remove collaborator (or collaborator leaves).
  */
 export const removeCollaborator = async (req, res) => {
   try {
-    const { spaceId, collaboratorUserId } = req.params;
+    const spaceId = req.params.spaceId;
+    const collaboratorUserId = req.params.collaboratorUserId || req.params.userId;
     const userId = req.user._id;
 
     const space = await Space.findById(spaceId);
@@ -114,7 +170,7 @@ export const removeCollaborator = async (req, res) => {
       return res.status(403).json({ error: "Unauthorized." });
     }
 
-    space.collaborators = space.collaborators.filter(c => c.user.toString() !== collaboratorUserId);
+    space.collaborators = space.collaborators.filter(c => (c.user?._id || c.user)?.toString() !== collaboratorUserId);
     space.contributorsCount = Math.max(1, (space.collaborators.length || 0) + 1);
     await space.save();
 
@@ -132,12 +188,14 @@ export const removeCollaborator = async (req, res) => {
 };
 
 /**
- * PATCH /api/collaborators/:spaceId/:collaboratorUserId
+ * PATCH /api/spaces/:spaceId/collaborators/:userId
+ * or PATCH /api/collaborators/:spaceId/:collaboratorUserId
  * Change collaborator role (viewer <-> editor).
  */
 export const updateCollaboratorRole = async (req, res) => {
   try {
-    const { spaceId, collaboratorUserId } = req.params;
+    const spaceId = req.params.spaceId;
+    const collaboratorUserId = req.params.collaboratorUserId || req.params.userId;
     const { role } = req.body;
     const userId = req.user._id;
 
@@ -154,7 +212,7 @@ export const updateCollaboratorRole = async (req, res) => {
       return res.status(403).json({ error: "Only the Space owner can update collaborator roles." });
     }
 
-    const collab = space.collaborators?.find(c => c.user.toString() === collaboratorUserId);
+    const collab = space.collaborators?.find(c => (c.user?._id || c.user)?.toString() === collaboratorUserId);
     if (!collab) {
       return res.status(404).json({ error: "Collaborator not found on this Space." });
     }

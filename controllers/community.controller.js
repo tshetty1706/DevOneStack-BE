@@ -3,8 +3,10 @@ import PostComment from "../models/PostComment.js";
 import Follow from "../models/Follow.js";
 import Space from "../models/Space.js";
 import User from "../models/User.js";
+import DailyContribution from "../models/DailyContribution.js";
 import { createInboxNotification } from "../utils/notificationService.js";
 import uploadToCloudinary from "../utils/uploadToCloudinary.js";
+import { getHeatmapData } from "../services/contribution.service.js";
 
 /**
  * GET /api/community/feed
@@ -603,15 +605,21 @@ export const getPublicProfile = async (req, res) => {
     }
 
     // Public spaces only!
-    const [publicSpaces, followersCount, followingCount, isFollowing] = await Promise.all([
+    const [publicSpaces, followersCount, followingCount, isFollowing, contribAgg] = await Promise.all([
       Space.find({ owner: user._id, visibility: 'public' })
         .select('name description tool thumbnail visibility starsCount viewsCount tags iconKey createdAt')
         .sort({ starsCount: -1, updatedAt: -1 })
         .lean(),
       Follow.countDocuments({ following: user._id }),
       Follow.countDocuments({ follower: user._id }),
-      currentUserId ? Follow.exists({ follower: currentUserId, following: user._id }) : false
+      currentUserId ? Follow.exists({ follower: currentUserId, following: user._id }) : false,
+      DailyContribution.aggregate([
+        { $match: { user: user._id } },
+        { $group: { _id: null, total: { $sum: '$points' } } }
+      ])
     ]);
+
+    const totalContributions = contribAgg?.[0]?.total || 0;
 
     return res.json({
       user: {
@@ -629,6 +637,7 @@ export const getPublicProfile = async (req, res) => {
         createdAt: user.createdAt,
         followersCount,
         followingCount,
+        totalContributions,
         isFollowing: Boolean(isFollowing)
       },
       publicSpaces
@@ -638,3 +647,264 @@ export const getPublicProfile = async (req, res) => {
     return res.status(500).json({ error: "Failed to load public profile." });
   }
 };
+
+/**
+ * GET /api/community/search
+ * Search across Users, Public Spaces, and Posts.
+ * Filters: 'all' | 'users' | 'spaces' | 'posts'
+ */
+export const searchCommunity = async (req, res) => {
+  try {
+    const { q, query, search, term, filter = 'all', page = 1, limit = 10 } = req.query;
+    const currentUserId = req.user?._id;
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.min(20, Math.max(1, parseInt(limit, 10) || 10));
+    const skip = (pageNum - 1) * limitNum;
+
+    const rawTerm = q || query || search || term || '';
+    const searchTerm = String(rawTerm).trim();
+    if (!searchTerm) {
+      return res.json({
+        users: [],
+        spaces: [],
+        posts: [],
+        totalUsers: 0,
+        totalSpaces: 0,
+        totalPosts: 0,
+        page: pageNum,
+        totalPages: 0,
+      });
+    }
+
+    const regex = new RegExp(searchTerm.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&'), 'i');
+    const cleanUserTerm = searchTerm.replace(/^@/, '');
+    const userRegex = new RegExp(cleanUserTerm.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&'), 'i');
+
+    // 1. Search Users
+    const searchUsersPromise = async () => {
+      if (filter !== 'all' && filter !== 'users') return { list: [], count: 0 };
+      const userQuery = {
+        $or: [
+          { username: userRegex },
+          { displayName: regex }
+        ]
+      };
+      const [usersList, count] = await Promise.all([
+        User.find(userQuery)
+          .select('username displayName avatarUrl bio role skills location createdAt')
+          .skip(filter === 'users' ? skip : 0)
+          .limit(filter === 'users' ? limitNum : 6)
+          .lean(),
+        User.countDocuments(userQuery)
+      ]);
+
+      let myFollowings = new Set();
+      if (currentUserId) {
+        const follows = await Follow.find({ follower: currentUserId }).select('following').lean();
+        myFollowings = new Set(follows.map(f => f.following.toString()));
+      }
+
+      const usersWithStats = await Promise.all(
+        usersList.map(async (u) => {
+          const followersCount = await Follow.countDocuments({ following: u._id });
+          return {
+            _id: u._id,
+            username: u.username,
+            displayName: u.displayName || u.username,
+            avatarUrl: u.avatarUrl || '',
+            bio: u.bio || '',
+            role: u.role || '',
+            skills: u.skills || [],
+            location: u.location || '',
+            createdAt: u.createdAt,
+            followersCount,
+            isFollowing: myFollowings.has(u._id.toString()),
+            isSelf: currentUserId ? u._id.toString() === currentUserId.toString() : false
+          };
+        })
+      );
+
+      return { list: usersWithStats, count };
+    };
+
+    // 2. Search Public Spaces (strictly visibility = 'public')
+    const searchSpacesPromise = async () => {
+      if (filter !== 'all' && filter !== 'spaces') return { list: [], count: 0 };
+      const spaceQuery = {
+        visibility: 'public',
+        $or: [
+          { name: regex },
+          { description: regex },
+          { tags: regex }
+        ]
+      };
+      const [spacesList, count] = await Promise.all([
+        Space.find(spaceQuery)
+          .sort({ starsCount: -1, viewsCount: -1, updatedAt: -1 })
+          .skip(filter === 'spaces' ? skip : 0)
+          .limit(filter === 'spaces' ? limitNum : 6)
+          .populate('owner', 'username displayName avatarUrl')
+          .select('name description tool thumbnail visibility starsCount viewsCount tags iconKey owner allowCloning createdAt updatedAt')
+          .lean(),
+        Space.countDocuments(spaceQuery)
+      ]);
+      return { list: spacesList, count };
+    };
+
+    // 3. Search Posts
+    const searchPostsPromise = async () => {
+      if (filter !== 'all' && filter !== 'posts') return { list: [], count: 0 };
+
+      const matchedAuthors = await User.find({
+        $or: [{ username: regex }, { displayName: regex }]
+      }).select('_id').lean();
+      const authorIds = matchedAuthors.map(a => a._id);
+
+      const postQuery = {
+        $or: [
+          { text: regex },
+          ...(authorIds.length > 0 ? [{ author: { $in: authorIds } }] : [])
+        ]
+      };
+
+      const [postsList, count] = await Promise.all([
+        Post.find(postQuery)
+          .sort({ createdAt: -1 })
+          .skip(filter === 'posts' ? skip : 0)
+          .limit(filter === 'posts' ? limitNum : 6)
+          .populate('author', 'username displayName avatarUrl role bio')
+          .populate({
+            path: 'space',
+            match: { visibility: 'public' },
+            select: 'name description tool thumbnail visibility starsCount viewsCount tags iconKey owner allowCloning',
+            populate: { path: 'owner', select: 'username displayName avatarUrl' }
+          })
+          .lean(),
+        Post.countDocuments(postQuery)
+      ]);
+
+      const sanitizedPosts = postsList.map(post => ({
+        _id: post._id,
+        text: post.text,
+        imageUrl: post.imageUrl || '',
+        author: post.author,
+        space: post.space || null,
+        likesCount: post.likesCount || 0,
+        commentsCount: post.commentsCount || 0,
+        isEdited: Boolean(post.isEdited),
+        isLiked: currentUserId ? Array.isArray(post.likedBy) && post.likedBy.some(id => id.toString() === currentUserId.toString()) : false,
+        createdAt: post.createdAt,
+        updatedAt: post.updatedAt,
+      }));
+
+      return { list: sanitizedPosts, count };
+    };
+
+    const [usersRes, spacesRes, postsRes] = await Promise.all([
+      searchUsersPromise(),
+      searchSpacesPromise(),
+      searchPostsPromise()
+    ]);
+
+    return res.json({
+      users: usersRes.list,
+      spaces: spacesRes.list,
+      posts: postsRes.list,
+      totalUsers: usersRes.count,
+      totalSpaces: spacesRes.count,
+      totalPosts: postsRes.count,
+      page: pageNum,
+      totalPages: filter === 'all'
+        ? Math.max(1, Math.ceil(Math.max(usersRes.count, spacesRes.count, postsRes.count) / limitNum))
+        : Math.max(1, Math.ceil((filter === 'users' ? usersRes.count : filter === 'spaces' ? spacesRes.count : postsRes.count) / limitNum))
+    });
+  } catch (err) {
+    console.error("searchCommunity error:", err);
+    return res.status(500).json({ error: "Failed to perform search." });
+  }
+};
+
+/**
+ * GET /api/community/my-posts
+ * Fetch all posts created by the currently authenticated user.
+ */
+export const getMyPosts = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const { page = 1, limit = 10 } = req.query;
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.min(30, Math.max(1, parseInt(limit, 10) || 10));
+    const skip = (pageNum - 1) * limitNum;
+
+    const [posts, total] = await Promise.all([
+      Post.find({ author: userId })
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum)
+        .populate('author', 'username displayName avatarUrl role bio')
+        .populate({
+          path: 'space',
+          select: 'name description tool thumbnail visibility starsCount viewsCount tags iconKey owner allowCloning',
+          populate: { path: 'owner', select: 'username displayName avatarUrl' }
+        })
+        .lean(),
+      Post.countDocuments({ author: userId })
+    ]);
+
+    const sanitizedPosts = posts.map(post => {
+      const isSpacePublic = post.space?.visibility === 'public';
+      const isSpaceOwner = post.space?.owner?._id?.toString() === userId.toString() || post.space?.owner?.toString() === userId.toString();
+      
+      return {
+        _id: post._id,
+        text: post.text,
+        imageUrl: post.imageUrl || '',
+        author: post.author,
+        space: (isSpacePublic || isSpaceOwner) ? post.space : null,
+        likesCount: post.likesCount || 0,
+        commentsCount: post.commentsCount || 0,
+        isEdited: Boolean(post.isEdited),
+        isLiked: Array.isArray(post.likedBy) && post.likedBy.some(id => id.toString() === userId.toString()),
+        createdAt: post.createdAt,
+        updatedAt: post.updatedAt,
+      };
+    });
+
+    return res.json({
+      posts: sanitizedPosts,
+      total,
+      page: pageNum,
+      totalPages: Math.ceil(total / limitNum) || 1
+    });
+  } catch (err) {
+    console.error("getMyPosts error:", err);
+    return res.status(500).json({ error: "Failed to load user posts." });
+  }
+};
+
+/**
+ * GET /api/community/contributions/:username
+ * Fetch server-calculated contribution heatmap data for a user.
+ */
+export const getUserContributions = async (req, res) => {
+  try {
+    const { username } = req.params;
+    const { months = 12 } = req.query;
+
+    const user = await User.findOne({ username }).select('_id username displayName').lean();
+    if (!user) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    const heatmapData = await getHeatmapData(user._id, months);
+    return res.json({
+      username: user.username,
+      displayName: user.displayName || user.username,
+      ...heatmapData
+    });
+  } catch (err) {
+    console.error("getUserContributions error:", err);
+    return res.status(500).json({ error: "Failed to load contribution data." });
+  }
+};
+

@@ -16,6 +16,7 @@ router.post('/upload', upload.single('file'), ctrl.uploadItem);
 router.get('/:itemId', ctrl.getItem);
 router.patch('/:itemId/pin', ctrl.togglePinItem);
 router.patch('/:itemId', ctrl.updateItem);
+router.post('/:itemId/read', ctrl.recordItemEngagement);
 router.delete('/:itemId', ctrl.deleteItem);
 
 export default router;

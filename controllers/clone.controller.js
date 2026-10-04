@@ -51,7 +51,8 @@ async function performSpaceContentClone(sourceSpaceId, newSpaceId, newOwnerId) {
       spaceId: newSpaceId,
       folderId: mappedFolderId,
       starsCount: 0,
-      isPinned: false
+      isPinned: false,
+      source: 'clone',
     };
   });
 

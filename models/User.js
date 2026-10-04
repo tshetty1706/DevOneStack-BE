@@ -55,4 +55,6 @@ UserSchema.virtual('isLocked').get(function () {
   return this.lockUntil && this.lockUntil > Date.now();
 });
 
+UserSchema.index({ displayName: 1 });
+
 export default mongoose.model('User', UserSchema);

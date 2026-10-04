@@ -21,6 +21,11 @@ import {
   parseTags,
   sendError
 } from '../utils/spaceHelpers.js';
+import {
+  recordItemCreate,
+  recordItemEdit,
+  recordItemRead
+} from '../services/contribution.service.js';
 
 /**
  * Build folder map for fast path lookup
@@ -411,6 +416,9 @@ export const createItem = async (req, res) => {
       { spaceId, itemId: item._id, type: finalType }
     );
 
+    // Record server-calculated contribution (+3 pts, max 5/day)
+    await recordItemCreate(req.user._id, space, item).catch(err => console.error('recordItemCreate error:', err));
+
     const pathMap = await getFolderPathMap(spaceId);
     const folderInfo = item.folderId ? pathMap.get(item.folderId.toString()) : null;
 
@@ -438,6 +446,8 @@ export const updateItem = async (req, res) => {
 
     const item = await Item.findOne({ _id: itemId, spaceId });
     if (!item) return res.status(404).json({ error: 'Item not found' });
+
+    const oldContent = item.content || item.caption || item.codeExample?.code || '';
 
     if (updates.title !== undefined) {
       const trimmed = updates.title.trim();
@@ -515,6 +525,10 @@ export const updateItem = async (req, res) => {
         { spaceId, itemId: item._id, type: item.type }
       );
     }
+
+    // Record server-calculated edit contribution (+2 pts, meaningful edits only, once per day)
+    const newContent = item.content || item.caption || item.codeExample?.code || '';
+    await recordItemEdit(req.user._id, space, item, oldContent, newContent).catch(err => console.error('recordItemEdit error:', err));
 
     res.json({
       item: {
@@ -843,5 +857,40 @@ export const deleteItem = async (req, res) => {
     res.json({ message: 'Item deleted successfully' });
   } catch (err) {
     sendError(res, err, 'Failed to delete item');
+  }
+};
+
+/**
+ * POST /api/spaces/:spaceId/items/:itemId/read
+ * Record meaningful engagement on an item (+1 point if eligible and deduplicated).
+ */
+export const recordItemEngagement = async (req, res) => {
+  try {
+    const { spaceId, itemId } = req.params;
+    const { durationSeconds = 0, meaningfulInteraction = false } = req.body;
+    const userId = req.user?._id;
+
+    if (!userId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const space = await Space.findById(spaceId);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
+
+    const item = await Item.findOne({ _id: itemId, spaceId });
+    if (!item) return res.status(404).json({ error: 'Item not found' });
+
+    const result = await recordItemRead(
+      userId,
+      space,
+      item,
+      parseInt(durationSeconds, 10) || 0,
+      Boolean(meaningfulInteraction)
+    );
+
+    return res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('recordItemEngagement error:', err);
+    return res.status(500).json({ error: 'Failed to record engagement' });
   }
 };
