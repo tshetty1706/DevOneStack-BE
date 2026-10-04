@@ -1,45 +1,35 @@
-import Learning from '../models/Learning.js';
-import Snippet from '../models/Snippet.js';
-import Doc from '../models/Doc.js';
-import Repo from '../models/Repo.js';
-import Prompt from '../models/Prompt.js';
-import Community from '../models/Community.js';
+import Item from '../models/Item.js';
 
+// GET /api/dashboard/pinned
 export const getAllPinned = async (req, res) => {
   try {
     const owner = req.user._id;
 
-    const [learnings, snippets, docs, repos, prompts, communities] = await Promise.all([
-      Learning.find({ owner, isPinned: true })
-        .select('title type content tags spaceId codeExample updatedAt')
-        .populate('spaceId', 'name')
-        .limit(10),
-      Snippet.find({ owner, isPinned: true })
-        .select('name caption language preview tags spaceId usedCount')
-        .populate('spaceId', 'name')
-        .limit(10),
-      Doc.find({ owner, isPinned: true })
-        .select('title type url cloudinaryPublicId caption tags spaceId')
-        .populate('spaceId', 'name')
-        .limit(10),
-      Repo.find({ owner, isPinned: true })
-        .select('name url caption platform tags spaceId isOwn')
-        .populate('spaceId', 'name')
-        .limit(10),
-      Prompt.find({ owner, isPinned: true })
-        .select('title body caption model tags spaceId usedCount')
-        .populate('spaceId', 'name')
-        .limit(10),
-      Community.find({ owner, isPinned: true })
-        .select('name url platform caption tags spaceId')
-        .populate('spaceId', 'name')
-        .limit(10),
-    ]);
+    const pinnedItems = await Item.find({ owner, isPinned: true })
+      .populate('spaceId', 'name iconKey color isArchived')
+      .sort({ updatedAt: -1 })
+      .limit(100)
+      .lean();
 
-    const total = learnings.length + snippets.length + docs.length +
-                  repos.length + prompts.length + communities.length;
+    const learnings = pinnedItems.filter(i => i.type === 'learning');
+    const snippets = pinnedItems.filter(i => i.type === 'snippet');
+    const docs = pinnedItems.filter(i => i.type === 'doc' || i.type === 'image');
+    const repos = pinnedItems.filter(i => i.type === 'repo');
+    const prompts = pinnedItems.filter(i => i.type === 'prompt');
+    const communities = pinnedItems.filter(i => i.type === 'community');
+    const notes = pinnedItems.filter(i => i.type === 'note');
 
-    res.json({ learnings, snippets, docs, repos, prompts, communities, total });
+    res.json({
+      items: pinnedItems,
+      learnings,
+      snippets,
+      docs,
+      repos,
+      prompts,
+      communities,
+      notes,
+      total: pinnedItems.length,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

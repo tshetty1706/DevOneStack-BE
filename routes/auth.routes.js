@@ -10,8 +10,11 @@ import {
   resetPassword,
   refresh,
   getMe,
+  updateProfile,
+  uploadAvatar,
 } from "../controllers/auth.controller.js";
 import protectRoute from "../middleware/protectRoute.js";
+import upload from "../config/multer.js";
 import { loginLimiter, signupLimiter, forgotPasswordLimiter } from "../middleware/rateLimiter.js";
 import { signAccessToken, signRefreshToken } from "../utils/jwt.js";
 import { ensureUserHasUsername } from "../utils/usernameGenerator.js";
@@ -29,6 +32,8 @@ router.post("/reset-password/:token", resetPassword);
 
 // Session Verification & Refresh
 router.get("/me", protectRoute, getMe);
+router.put("/profile", protectRoute, updateProfile);
+router.post("/avatar", protectRoute, upload.single("avatar"), uploadAvatar);
 router.post("/refresh", refresh);
 
 // Passport Google OAuth
@@ -45,9 +50,22 @@ router.get(
   "/google/callback",
   (req, res, next) => {
     const clientUrl = process.env.CLIENT_URL || process.env.FRONTEND_URL || "http://localhost:5173";
-    passport.authenticate("google", {
-      session: false,
-      failureRedirect: `${clientUrl}/login?error=account_not_found&provider=google`,
+    passport.authenticate("google", { session: false }, (err, user, info) => {
+      if (err) {
+        console.error("Google OAuth error:", err);
+        return res.redirect(`${clientUrl}/login?error=oauth_failed`);
+      }
+      if (!user) {
+        if (info?.message === "account_exists_local") {
+          return res.redirect(`${clientUrl}/login?error=account_exists&provider=local`);
+        }
+        if (info?.message === "account_not_found") {
+          return res.redirect(`${clientUrl}/login?error=account_not_found&provider=google`);
+        }
+        return res.redirect(`${clientUrl}/login?error=oauth_failed`);
+      }
+      req.user = user;
+      next();
     })(req, res, next);
   },
   async (req, res) => {

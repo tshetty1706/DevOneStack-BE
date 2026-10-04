@@ -7,4 +7,7 @@ const HistorySchema = new mongoose.Schema({
   meta:   { type: mongoose.Schema.Types.Mixed, default: {} }, // extra info (spaceId, spaceName, etc.)
 }, { timestamps: true });
 
+HistorySchema.index({ 'meta.spaceId': 1, createdAt: -1 });
+HistorySchema.index({ owner: 1, createdAt: -1 });
+
 export default mongoose.model('History', HistorySchema);

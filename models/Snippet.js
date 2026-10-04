@@ -5,6 +5,7 @@ const { ObjectId } = Schema.Types;
 const SnippetSchema = new Schema({
   owner:     { type: ObjectId, ref: 'User', required: true, index: true },
   spaceId:   { type: ObjectId, ref: 'Space', required: true },
+  folderId:  { type: ObjectId, ref: 'Folder', default: null, index: true },
   name:      { type: String, required: true, trim: true, maxLength: 80 },
   caption:   { type: String, maxLength: 200 },
   language:  { type: String, required: true, trim: true },

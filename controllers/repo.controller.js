@@ -1,4 +1,4 @@
-import Repo from '../models/Repo.js';
+import Item from '../models/Item.js';
 import {
   verifySpaceOwnership,
   updateSpaceResourceCount,
@@ -7,24 +7,37 @@ import {
   sendError,
 } from '../utils/spaceHelpers.js';
 
-const VALID_REPO_URL = /^https?:\/\/(github|gitlab|bitbucket)\.com\/.+/;
-
 // GET /api/spaces/:spaceId/repos
 export const listRepos = async (req, res) => {
   try {
     const { spaceId } = req.params;
     const { lastId, tag } = req.query;
 
-    const filter = { spaceId, owner: req.user._id };
+    const filter = { spaceId, owner: req.user._id, type: 'repo' };
     if (lastId) filter._id = { $gt: lastId };
-    if (tag)    filter.tags = tag;
+    if (tag) filter.tags = tag.toLowerCase().trim();
 
-    const repos = await Repo.find(filter)
-      .sort({ createdAt: -1 })
-      .limit(20)
-      .select('-__v');
+    const items = await Item.find(filter)
+      .sort({ isPinned: -1, updatedAt: -1 })
+      .limit(50)
+      .lean();
 
-    res.json({ repos, hasMore: repos.length === 20 });
+    const repos = items.map(i => ({
+      _id: i._id,
+      name: i.title,
+      title: i.title,
+      url: i.url,
+      caption: i.caption,
+      platform: i.platform || 'github',
+      isOwn: i.isOwn || false,
+      tags: i.tags,
+      isPinned: i.isPinned,
+      folderId: i.folderId,
+      createdAt: i.createdAt,
+      updatedAt: i.updatedAt,
+    }));
+
+    res.json({ repos, hasMore: items.length === 50 });
   } catch (err) {
     sendError(res, err, 'Failed to load repositories');
   }
@@ -33,25 +46,28 @@ export const listRepos = async (req, res) => {
 // POST /api/spaces/:spaceId/repos
 export const createRepo = async (req, res) => {
   try {
-    const { name, url, caption, platform, tags = [], isOwn = false } = req.body;
+    const { name, title, url, caption, platform, tags = [], isOwn = false, folderId } = req.body;
     const { spaceId } = req.params;
 
-    if (!VALID_REPO_URL.test(url)) {
-      return res.status(400).json({ error: 'Invalid repository URL. Must be github.com, gitlab.com or bitbucket.com' });
-    }
+    const repoTitle = (title || name || '').trim();
+    if (!repoTitle) return res.status(400).json({ error: 'Repository name/title is required' });
+    if (!url) return res.status(400).json({ error: 'Repository URL is required' });
 
     const space = await verifySpaceOwnership(spaceId, req.user._id);
     if (!space) return res.status(404).json({ error: 'Space not found' });
 
-    const repo = await Repo.create({
+    const item = await Item.create({
       owner: req.user._id,
       spaceId,
-      name: name.trim(),
+      folderId: folderId || null,
+      title: repoTitle,
+      repoName: repoTitle,
+      type: 'repo',
       url: url.trim(),
-      caption: caption?.trim(),
+      caption: caption?.trim() || '',
       platform: platform || 'github',
+      isOwn: !!isOwn,
       tags: parseTags(tags),
-      isOwn,
     });
 
     await updateSpaceResourceCount(spaceId, 'reposCount', 1);
@@ -59,11 +75,26 @@ export const createRepo = async (req, res) => {
     await logUserHistory(
       req.user._id,
       'created_repo',
-      `Linked repository "${repo.name}"`,
-      { spaceId, repoId: repo._id }
+      `Linked repository "${item.title}"`,
+      { spaceId, repoId: item._id }
     );
 
-    res.status(201).json({ repo });
+    res.status(201).json({
+      repo: {
+        _id: item._id,
+        name: item.title,
+        title: item.title,
+        url: item.url,
+        caption: item.caption,
+        platform: item.platform,
+        isOwn: item.isOwn,
+        tags: item.tags,
+        isPinned: item.isPinned,
+        folderId: item.folderId,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+      }
+    });
   } catch (err) {
     sendError(res, err);
   }
@@ -72,29 +103,44 @@ export const createRepo = async (req, res) => {
 // PATCH /api/spaces/:spaceId/repos/:id
 export const updateRepo = async (req, res) => {
   try {
-    const { name, url, caption, platform, tags, isOwn } = req.body;
-    const update = {};
-    if (name !== undefined)    update.name = name.trim();
-    if (caption !== undefined) update.caption = caption.trim();
-    if (platform !== undefined) update.platform = platform;
-    if (tags !== undefined)     update.tags = parseTags(tags);
-    if (isOwn !== undefined)   update.isOwn = isOwn;
+    const { name, title, url, caption, platform, tags, isOwn, folderId } = req.body;
+    const { spaceId, id } = req.params;
 
-    if (url !== undefined) {
-      if (!VALID_REPO_URL.test(url)) {
-        return res.status(400).json({ error: 'Invalid repository URL' });
-      }
-      update.url = url.trim();
+    const space = await verifySpaceOwnership(spaceId, req.user._id);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
+
+    const item = await Item.findOne({ _id: id, spaceId, owner: req.user._id, type: 'repo' });
+    if (!item) return res.status(404).json({ error: 'Repository not found' });
+
+    if (name !== undefined || title !== undefined) {
+      item.title = (title || name).trim();
+      item.repoName = item.title;
     }
+    if (url !== undefined) item.url = url.trim();
+    if (caption !== undefined) item.caption = caption.trim();
+    if (platform !== undefined) item.platform = platform;
+    if (tags !== undefined) item.tags = parseTags(tags);
+    if (isOwn !== undefined) item.isOwn = isOwn;
+    if (folderId !== undefined) item.folderId = (folderId && folderId !== 'root') ? folderId : null;
 
-    const repo = await Repo.findOneAndUpdate(
-      { _id: req.params.id, owner: req.user._id },
-      update,
-      { new: true }
-    );
-    if (!repo) return res.status(404).json({ error: 'Repository not found' });
+    await item.save();
 
-    res.json({ repo });
+    res.json({
+      repo: {
+        _id: item._id,
+        name: item.title,
+        title: item.title,
+        url: item.url,
+        caption: item.caption,
+        platform: item.platform,
+        isOwn: item.isOwn,
+        tags: item.tags,
+        isPinned: item.isPinned,
+        folderId: item.folderId,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+      }
+    });
   } catch (err) {
     sendError(res, err);
   }
@@ -103,15 +149,17 @@ export const updateRepo = async (req, res) => {
 // DELETE /api/spaces/:spaceId/repos/:id
 export const deleteRepo = async (req, res) => {
   try {
-    const repo = await Repo.findOneAndDelete({
-      _id: req.params.id,
-      owner: req.user._id
-    });
-    if (!repo) return res.status(404).json({ error: 'Not found' });
+    const { spaceId, id } = req.params;
 
-    await updateSpaceResourceCount(repo.spaceId, 'reposCount', -1);
+    const space = await verifySpaceOwnership(spaceId, req.user._id);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
 
-    res.json({ message: 'Deleted' });
+    const item = await Item.findOneAndDelete({ _id: id, spaceId, owner: req.user._id, type: 'repo' });
+    if (!item) return res.status(404).json({ error: 'Repository not found' });
+
+    await updateSpaceResourceCount(spaceId, 'reposCount', -1);
+
+    res.json({ message: 'Repository connection deleted' });
   } catch (err) {
     sendError(res, err);
   }
@@ -123,18 +171,57 @@ export const searchRepos = async (req, res) => {
     const { q } = req.query;
     const { spaceId } = req.params;
 
-    const repos = await Repo.find({
+    const items = await Item.find({
       spaceId,
       owner: req.user._id,
+      type: 'repo',
       $or: [
-        { name:    { $regex: q, $options: 'i' } },
+        { title: { $regex: q, $options: 'i' } },
+        { repoName: { $regex: q, $options: 'i' } },
         { caption: { $regex: q, $options: 'i' } },
-        { tags:    { $regex: q, $options: 'i' } },
+        { url: { $regex: q, $options: 'i' } },
+        { tags: { $regex: q, $options: 'i' } },
       ]
-    }).limit(20).select('-__v');
+    }).limit(20).lean();
+
+    const repos = items.map(i => ({
+      _id: i._id,
+      name: i.title,
+      title: i.title,
+      url: i.url,
+      caption: i.caption,
+      platform: i.platform || 'github',
+      isOwn: i.isOwn || false,
+      tags: i.tags,
+      isPinned: i.isPinned,
+      folderId: i.folderId,
+      createdAt: i.createdAt,
+      updatedAt: i.updatedAt,
+    }));
 
     res.json({ repos, count: repos.length });
   } catch (err) {
     sendError(res, err);
   }
 };
+
+// PATCH /api/spaces/:spaceId/repos/:id/pin
+export const togglePin = async (req, res) => {
+  try {
+    const { spaceId, id } = req.params;
+
+    const space = await verifySpaceOwnership(spaceId, req.user._id);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
+
+    const item = await Item.findOne({ _id: id, spaceId, owner: req.user._id, type: 'repo' });
+    if (!item) return res.status(404).json({ error: 'Repository not found' });
+
+    item.isPinned = !item.isPinned;
+    await item.save();
+
+    res.json({ isPinned: item.isPinned });
+  } catch (err) {
+    sendError(res, err);
+  }
+};
+

@@ -1,5 +1,4 @@
-import Learning from '../models/Learning.js';
-import { syncPinnedItem } from '../utils/pinSync.js';
+import Item from '../models/Item.js';
 import {
   verifySpaceOwnership,
   updateSpaceResourceCount,
@@ -14,13 +13,26 @@ export const listLearnings = async (req, res) => {
     const { spaceId } = req.params;
     const { type, tag } = req.query;
 
-    const filter = { spaceId, owner: req.user._id };
-    if (type && type !== 'all') filter.type = type;
+    const filter = { spaceId, owner: req.user._id, type: 'learning' };
+    if (type && type !== 'all') filter.learningType = type;
     if (tag) filter.tags = tag.toLowerCase().trim();
 
-    const learnings = await Learning.find(filter)
+    const items = await Item.find(filter)
       .sort({ isPinned: -1, updatedAt: -1 })
-      .select('-__v');
+      .lean();
+
+    const learnings = items.map(i => ({
+      _id: i._id,
+      title: i.title,
+      type: i.learningType || 'learning',
+      content: i.content,
+      codeExample: i.codeExample || { language: '', code: '' },
+      tags: i.tags,
+      isPinned: i.isPinned,
+      folderId: i.folderId,
+      createdAt: i.createdAt,
+      updatedAt: i.updatedAt,
+    }));
 
     res.json({ learnings });
   } catch (err) {
@@ -28,13 +40,63 @@ export const listLearnings = async (req, res) => {
   }
 };
 
+// GET /api/spaces/:spaceId/learnings/search?q=
+export const searchLearnings = async (req, res) => {
+  try {
+    const { q } = req.query;
+    const { spaceId } = req.params;
+
+    const items = await Item.find({
+      spaceId,
+      owner: req.user._id,
+      type: 'learning',
+      $or: [
+        { title: { $regex: q, $options: 'i' } },
+        { content: { $regex: q, $options: 'i' } },
+        { tags: { $regex: q, $options: 'i' } },
+      ]
+    }).limit(20).lean();
+
+    const learnings = items.map(i => ({
+      _id: i._id,
+      title: i.title,
+      type: i.learningType || 'learning',
+      content: i.content,
+      codeExample: i.codeExample || { language: '', code: '' },
+      tags: i.tags,
+      isPinned: i.isPinned,
+      folderId: i.folderId,
+      createdAt: i.createdAt,
+      updatedAt: i.updatedAt,
+    }));
+
+    res.json({ learnings, count: learnings.length });
+  } catch (err) {
+    sendError(res, err);
+  }
+};
+
 // GET /api/spaces/:spaceId/learnings/:learningId
 export const getLearning = async (req, res) => {
   try {
-    const { learningId } = req.params;
-    const learning = await Learning.findOne({ _id: learningId, owner: req.user._id });
-    if (!learning) return res.status(404).json({ error: 'Learning not found' });
-    res.json({ learning });
+    const { spaceId, learningId } = req.params;
+    const item = await Item.findOne({ _id: learningId, spaceId, owner: req.user._id, type: 'learning' });
+    if (!item) return res.status(404).json({ error: 'Learning not found' });
+
+    res.json({
+      learning: {
+        _id: item._id,
+        title: item.title,
+        type: item.learningType || 'learning',
+        content: item.content,
+        codeExample: item.codeExample || { language: '', code: '' },
+        tags: item.tags,
+        isPinned: item.isPinned,
+        folderId: item.folderId,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+      }
+    });
   } catch (err) {
     sendError(res, err);
   }
@@ -44,7 +106,7 @@ export const getLearning = async (req, res) => {
 export const createLearning = async (req, res) => {
   try {
     const { spaceId } = req.params;
-    const { title, type, content, codeExample, tags } = req.body;
+    const { title, type = 'learning', content, codeExample, tags, folderId } = req.body;
 
     if (!title || !content) {
       return res.status(400).json({ error: 'Title and content are required' });
@@ -53,11 +115,13 @@ export const createLearning = async (req, res) => {
     const space = await verifySpaceOwnership(spaceId, req.user._id);
     if (!space) return res.status(404).json({ error: 'Space not found' });
 
-    const learning = await Learning.create({
+    const item = await Item.create({
       owner: req.user._id,
       spaceId,
+      folderId: folderId || null,
       title: title.trim(),
-      type: type || 'learning',
+      type: 'learning',
+      learningType: type,
       content: content.trim(),
       codeExample: codeExample || { language: '', code: '' },
       tags: parseTags(tags),
@@ -69,11 +133,24 @@ export const createLearning = async (req, res) => {
     await logUserHistory(
       req.user._id,
       'created_learning',
-      `Created ${learning.type} "${learning.title}"`,
-      { spaceId, learningId: learning._id }
+      `Created ${item.learningType} "${item.title}"`,
+      { spaceId, learningId: item._id }
     );
 
-    res.status(201).json({ learning });
+    res.status(201).json({
+      learning: {
+        _id: item._id,
+        title: item.title,
+        type: item.learningType,
+        content: item.content,
+        codeExample: item.codeExample,
+        tags: item.tags,
+        isPinned: item.isPinned,
+        folderId: item.folderId,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+      }
+    });
   } catch (err) {
     sendError(res, err);
   }
@@ -82,43 +159,38 @@ export const createLearning = async (req, res) => {
 // PATCH /api/spaces/:spaceId/learnings/:learningId
 export const updateLearning = async (req, res) => {
   try {
-    const { learningId } = req.params;
-    const { title, type, content, codeExample, tags, isPinned } = req.body;
+    const { spaceId, learningId } = req.params;
+    const { title, type, content, codeExample, tags, folderId } = req.body;
 
-    const learning = await Learning.findOne({ _id: learningId, owner: req.user._id });
-    if (!learning) return res.status(404).json({ error: 'Learning not found' });
+    const space = await verifySpaceOwnership(spaceId, req.user._id);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
 
-    const oldPinned = learning.isPinned;
+    const item = await Item.findOne({ _id: learningId, spaceId, owner: req.user._id, type: 'learning' });
+    if (!item) return res.status(404).json({ error: 'Learning not found' });
 
-    if (title !== undefined) learning.title = title.trim();
-    if (type !== undefined) learning.type = type;
-    if (content !== undefined) learning.content = content.trim();
-    if (codeExample !== undefined) learning.codeExample = codeExample;
-    if (tags !== undefined) learning.tags = parseTags(tags);
-    if (isPinned !== undefined) learning.isPinned = isPinned;
+    if (title !== undefined) item.title = title.trim();
+    if (type !== undefined) item.learningType = type;
+    if (content !== undefined) item.content = content.trim();
+    if (codeExample !== undefined) item.codeExample = codeExample;
+    if (tags !== undefined) item.tags = parseTags(tags);
+    if (folderId !== undefined) item.folderId = (folderId && folderId !== 'root') ? folderId : null;
 
-    await learning.save();
+    await item.save();
 
-    // Pin synchronization if state changed
-    if (isPinned !== undefined && oldPinned !== isPinned) {
-      await syncPinnedItem(req.user._id, learning.spaceId, learning._id, 'learning', isPinned);
-      
-      await logUserHistory(
-        req.user._id,
-        isPinned ? 'pinned_learning' : 'unpinned_learning',
-        `${isPinned ? 'Pinned' : 'Unpinned'} learning "${learning.title}"`,
-        { spaceId: learning.spaceId, learningId: learning._id }
-      );
-    } else {
-      await logUserHistory(
-        req.user._id,
-        'updated_learning',
-        `Updated learning "${learning.title}"`,
-        { spaceId: learning.spaceId, learningId: learning._id }
-      );
-    }
-
-    res.json({ learning });
+    res.json({
+      learning: {
+        _id: item._id,
+        title: item.title,
+        type: item.learningType,
+        content: item.content,
+        codeExample: item.codeExample,
+        tags: item.tags,
+        isPinned: item.isPinned,
+        folderId: item.folderId,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+      }
+    });
   } catch (err) {
     sendError(res, err);
   }
@@ -129,49 +201,35 @@ export const deleteLearning = async (req, res) => {
   try {
     const { spaceId, learningId } = req.params;
 
-    const learning = await Learning.findOneAndDelete({ _id: learningId, owner: req.user._id });
-    if (!learning) return res.status(404).json({ error: 'Learning not found' });
+    const space = await verifySpaceOwnership(spaceId, req.user._id);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
 
-    // Sync pin removal
-    await syncPinnedItem(req.user._id, spaceId, learning._id, 'learning', false);
+    const item = await Item.findOneAndDelete({ _id: learningId, spaceId, owner: req.user._id, type: 'learning' });
+    if (!item) return res.status(404).json({ error: 'Learning not found' });
+
     await updateSpaceResourceCount(spaceId, 'learningsCount', -1);
 
-    await logUserHistory(
-      req.user._id,
-      'deleted_learning',
-      `Deleted learning "${learning.title}"`,
-      { spaceId }
-    );
-
-    res.json({ message: 'Deleted successfully' });
+    res.json({ message: 'Learning deleted' });
   } catch (err) {
     sendError(res, err);
   }
 };
 
-// GET /api/spaces/:spaceId/learnings/search?q=
-export const searchLearnings = async (req, res) => {
+// PATCH /api/spaces/:spaceId/learnings/:learningId/pin
+export const togglePin = async (req, res) => {
   try {
-    const { spaceId } = req.params;
-    const { q } = req.query;
+    const { spaceId, learningId } = req.params;
 
-    if (!q) {
-      const learnings = await Learning.find({ spaceId, owner: req.user._id }).sort({ updatedAt: -1 });
-      return res.json({ learnings, count: learnings.length });
-    }
+    const space = await verifySpaceOwnership(spaceId, req.user._id);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
 
-    const queryRegex = new RegExp(q, 'i');
-    const learnings = await Learning.find({
-      spaceId,
-      owner: req.user._id,
-      $or: [
-        { title: queryRegex },
-        { content: queryRegex },
-        { tags: queryRegex }
-      ]
-    }).sort({ updatedAt: -1 });
+    const item = await Item.findOne({ _id: learningId, spaceId, owner: req.user._id, type: 'learning' });
+    if (!item) return res.status(404).json({ error: 'Learning not found' });
 
-    res.json({ learnings, count: learnings.length });
+    item.isPinned = !item.isPinned;
+    await item.save();
+
+    res.json({ isPinned: item.isPinned });
   } catch (err) {
     sendError(res, err);
   }
