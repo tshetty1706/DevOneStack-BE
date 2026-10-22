@@ -1,8 +1,9 @@
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
 import User from "../models/User.js";
 import { signAccessToken, signRefreshToken } from "../utils/jwt.js";
-import { sendVerificationEmail, sendResetPasswordEmail, sendResetConfirmationEmail } from "../utils/email.js";
+import { sendVerificationEmail, sendResetPasswordEmail, sendOAuthReminderEmail, sendResetConfirmationEmail } from "../utils/email.js";
 import { ensureUserHasUsername } from "../utils/usernameGenerator.js";
 import uploadToCloudinary from "../utils/uploadToCloudinary.js";
 
@@ -185,8 +186,8 @@ export const login = async (req, res) => {
     }
 
     // Sign tokens
-    const accessToken = signAccessToken(user._id);
-    const refreshToken = signRefreshToken(user._id);
+    const accessToken = signAccessToken(user._id, user.tokenVersion || 0);
+    const refreshToken = signRefreshToken(user._id, user.tokenVersion || 0);
 
     res.cookie("refreshToken", refreshToken, getCookieOptions());
 
@@ -208,6 +209,39 @@ export const login = async (req, res) => {
 };
 
 export const logout = async (req, res) => {
+  try {
+    const refreshToken = req.cookies?.refreshToken;
+    let userIdToRevoke = null;
+
+    if (refreshToken) {
+      try {
+        const decodedRefresh = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+        if (decodedRefresh?.userId) {
+          userIdToRevoke = decodedRefresh.userId;
+        }
+      } catch (e) {
+        // expired or invalid refresh token
+      }
+    }
+
+    if (!userIdToRevoke && req.headers.authorization?.startsWith('Bearer ')) {
+      try {
+        const decodedAccess = jwt.decode(req.headers.authorization.split(' ')[1]);
+        if (decodedAccess?.userId) {
+          userIdToRevoke = decodedAccess.userId;
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    if (userIdToRevoke) {
+      await User.findByIdAndUpdate(userIdToRevoke, { $inc: { tokenVersion: 1 } });
+    }
+  } catch (err) {
+    console.error("Logout session revocation error:", err);
+  }
+
   res.clearCookie("refreshToken", {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
@@ -256,24 +290,64 @@ export const forgotPassword = async (req, res) => {
       return res.status(400).json({ error: "Please enter a valid email address." });
     }
 
-    const user = await User.findOne({ email: normalizedEmail, provider: "local" });
-    if (user) {
-      const resetToken = crypto.randomBytes(32).toString("hex");
-      user.resetToken = resetToken;
-      user.resetTokenExpiry = Date.now() + 60 * 60 * 1000; // 1 hour
-      await user.save();
+    // Generic public message strictly identical across registered, unregistered, and OAuth-only accounts
+    const genericSuccessMsg = "If an account is associated with that email, a password reset link has been sent.";
 
-      try {
-        await sendResetPasswordEmail(user.email, resetToken);
-      } catch (mailErr) {
-        console.error("Forgot password mail error:", mailErr.message);
+    // Look up account by email without filtering provider so we can handle OAuth vs Local safely
+    const user = await User.findOne({ email: normalizedEmail }).select("+passwordHash");
+
+    if (!user) {
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`[PASSWORD RESET] Non-existent email requested: "${normalizedEmail}"`);
       }
-    } else {
-      console.log(`[PASSWORD RESET] Request ignored: no local account found for email "${normalizedEmail}"`);
+      return res.status(200).json({ message: genericSuccessMsg });
     }
 
-    // Always return 200 for security to prevent account enumeration
-    return res.status(200).json({ message: "If an account is associated with that email, a password reset link has been sent." });
+    // Handle OAuth-only accounts (Google / GitHub) that lack a local password
+    const isOAuthOnly =
+      (user.provider === "google" || user.provider === "github" || user.googleId || user.githubId) &&
+      !user.passwordHash;
+
+    if (isOAuthOnly) {
+      const provider = user.provider || (user.googleId ? "google" : "github");
+      try {
+        await sendOAuthReminderEmail(user.email, provider);
+      } catch (mailErr) {
+        console.error("Forgot password OAuth reminder mail error:", mailErr.message);
+      }
+      return res.status(200).json({ message: genericSuccessMsg });
+    }
+
+    // Local password account:
+    // 1. Generate cryptographically secure 32-byte raw token
+    const rawToken = crypto.randomBytes(32).toString("hex");
+
+    // 2. Hash raw token with SHA-256 before database storage (never store raw token in MongoDB)
+    const hashedToken = crypto.createHash("sha256").update(rawToken).digest("hex");
+
+    // 3. Set 30-minute expiration window
+    const resetExpiry = Date.now() + 30 * 60 * 1000;
+
+    user.resetToken = hashedToken;
+    user.resetTokenExpiry = resetExpiry;
+    await user.save();
+
+    // 4. Send reset email containing ONLY the raw token in the reset link
+    try {
+      const emailResult = await sendResetPasswordEmail(user.email, rawToken);
+      if (emailResult && emailResult.success === false && emailResult.reason !== "no_api_key") {
+        user.resetToken = undefined;
+        user.resetTokenExpiry = undefined;
+        await user.save();
+      }
+    } catch (mailErr) {
+      console.error("Forgot password reset mail error:", mailErr.message);
+      user.resetToken = undefined;
+      user.resetTokenExpiry = undefined;
+      await user.save();
+    }
+
+    return res.status(200).json({ message: genericSuccessMsg });
   } catch (err) {
     console.error("Forgot password error:", err);
     return res.status(500).json({ error: "Something went wrong on our end. Try again shortly." });
@@ -283,40 +357,80 @@ export const forgotPassword = async (req, res) => {
 export const resetPassword = async (req, res) => {
   try {
     const { token } = req.params;
-    const { password } = req.body;
+    const { password, confirmPassword } = req.body;
+
+    const genericInvalidMsg = "This password reset link is invalid or has expired. Please request a new one.";
+
+    // 1. Validate token format (must be 64 hex characters)
+    if (!token || typeof token !== "string" || !/^[a-f0-9]{64}$/i.test(token)) {
+      return res.status(400).json({ error: genericInvalidMsg });
+    }
+
+    // 2. Validate passwords
+    if (confirmPassword !== undefined && password !== confirmPassword) {
+      return res.status(400).json({ error: "Passwords do not match." });
+    }
 
     if (!password || !isPasswordStrong(password)) {
       return res.status(400).json({ error: "Password needs 8+ chars, one uppercase, one number, one special character." });
     }
 
+    // 3. Hash incoming raw token using SHA-256 to look up matching record
+    const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
+
     const user = await User.findOne({
-      resetToken: token,
+      resetToken: hashedToken,
       resetTokenExpiry: { $gt: Date.now() },
     }).select("+passwordHash");
 
     if (!user) {
-      return res.status(400).json({ error: "This reset link has expired or already been used. Request a new one." });
+      return res.status(400).json({ error: genericInvalidMsg });
     }
 
-    // Ensure new password !== old
-    const match = await user.comparePassword(password);
-    if (match) {
-      return res.status(400).json({ error: "New password cannot be the same as your old password." });
+    // 4. Ensure new password !== old password
+    if (user.passwordHash) {
+      const match = await user.comparePassword(password);
+      if (match) {
+        return res.status(400).json({ error: "New password cannot be the same as your old password." });
+      }
     }
 
-    // Set new password (pre-save hashes it)
-    user.passwordHash = password;
-    user.resetToken = undefined;
-    user.resetTokenExpiry = undefined;
-    await user.save();
+    // 5. Hash new password with bcrypt (work factor 12)
+    const hashedPassword = await bcrypt.hash(password, 12);
 
+    // 6. Atomic single-use update and consumption:
+    // Guarantees one valid token can reset password only once;
+    // Two concurrent submissions cannot both consume the token;
+    // Revokes existing sessions by incrementing tokenVersion.
+    const updatedUser = await User.findOneAndUpdate(
+      {
+        _id: user._id,
+        resetToken: hashedToken,
+        resetTokenExpiry: { $gt: Date.now() },
+      },
+      {
+        $set: { passwordHash: hashedPassword, isVerified: true },
+        $unset: { resetToken: 1, resetTokenExpiry: 1, verifyToken: 1, verifyTokenExpiry: 1 },
+        $inc: { tokenVersion: 1 },
+      },
+      { new: true }
+    );
+
+    if (!updatedUser) {
+      return res.status(400).json({ error: genericInvalidMsg });
+    }
+
+    // 7. Revoke existing refresh token cookie
+    res.clearCookie("refreshToken", getCookieOptions());
+
+    // 8. Send password change confirmation notification
     try {
-      await sendResetConfirmationEmail(user.email);
+      await sendResetConfirmationEmail(updatedUser.email);
     } catch (mailErr) {
       console.error("Confirmation mail error:", mailErr.message);
     }
 
-    return res.status(200).json({ message: "Password reset successful." });
+    return res.status(200).json({ message: "Your password has been reset successfully. Please sign in with your new password." });
   } catch (err) {
     console.error("Reset password error:", err);
     return res.status(500).json({ error: "Something went wrong on our end. Try again shortly." });
@@ -342,7 +456,11 @@ export const refresh = async (req, res) => {
       return res.status(401).json({ error: "User no longer exists" });
     }
 
-    const accessToken = signAccessToken(user._id);
+    if (user.tokenVersion !== undefined && decoded.tokenVersion !== undefined && decoded.tokenVersion !== user.tokenVersion) {
+      return res.status(401).json({ error: "Session has been revoked. Please log in again." });
+    }
+
+    const accessToken = signAccessToken(user._id, user.tokenVersion || 0);
     return res.json({ accessToken });
   } catch (err) {
     console.error("Refresh token error:", err);

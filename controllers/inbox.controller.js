@@ -26,9 +26,13 @@ export const getUnreadCounts = async (req, res) => {
 
     return res.json({
       requests: requestsCount,
+      requestsCount,
       invitations: invitationsCount,
+      invitationsCount,
       notifications: notificationsCount,
-      total
+      notificationsCount,
+      total,
+      totalUnread: total
     });
   } catch (err) {
     console.error("getUnreadCounts error:", err);
@@ -108,9 +112,11 @@ export const getInboxItems = async (req, res) => {
 export const markTabAsRead = async (req, res) => {
   try {
     const userId = req.user._id;
-    const { tab = 'notifications' } = req.body;
+    const { tab = 'notifications', id } = req.body;
 
-    if (tab === 'notifications') {
+    if (id) {
+      await Notification.updateOne({ _id: id, recipient: userId }, { $set: { read: true } });
+    } else if (tab === 'notifications') {
       await Notification.updateMany({ recipient: userId, type: 'notification', read: false }, { $set: { read: true } });
     }
 
@@ -123,7 +129,7 @@ export const markTabAsRead = async (req, res) => {
 
 /**
  * POST /api/inbox/requests/:id/action
- * Handles Accept, Reject, Reject & Block for Clone Requests.
+ * Handles Accept, Reject, Reject & Block, Revoke, and Withdraw for Clone Requests.
  */
 export const handleCloneRequestAction = async (req, res) => {
   try {
@@ -136,8 +142,47 @@ export const handleCloneRequestAction = async (req, res) => {
       return res.status(404).json({ error: "Request not found." });
     }
 
+    // Requester withdrawal
+    if (action === 'withdraw') {
+      const requesterId = request.requester?._id?.toString() || request.requester?.toString();
+      if (requesterId !== userId.toString()) {
+        return res.status(403).json({ error: "Unauthorized: only the requester can withdraw this request." });
+      }
+      if (request.status !== 'pending') {
+        return res.status(400).json({ error: `Cannot withdraw request that is already ${request.status}.` });
+      }
+      request.status = 'withdrawn';
+      await request.save();
+      return res.json({ message: "Clone request withdrawn.", request });
+    }
+
+    // All other actions require space owner
     if (request.owner.toString() !== userId.toString()) {
       return res.status(403).json({ error: "Unauthorized: only the Space owner can take action." });
+    }
+
+    if (action === 'revoke') {
+      if (request.status !== 'accepted') {
+        return res.status(400).json({ error: `Cannot revoke request in '${request.status}' status. Only accepted uncompleted requests can be revoked.` });
+      }
+      request.status = 'revoked';
+      await request.save();
+
+      // Notify requester
+      await createInboxNotification({
+        recipient: request.requester._id || request.requester,
+        sender: userId,
+        type: 'notification',
+        category: 'request_revoked',
+        data: {
+          requestId: request._id,
+          spaceId: request.space?._id || request.space,
+          spaceName: request.space?.name || 'Space',
+          text: `revoked the clone approval for "${request.space?.name || 'Space'}"`
+        }
+      });
+
+      return res.json({ message: "Clone approval revoked.", request });
     }
 
     if (request.status !== 'pending') {
@@ -145,7 +190,7 @@ export const handleCloneRequestAction = async (req, res) => {
     }
 
     if (action === 'accept') {
-      // 7 days to use the accepted approval
+      // 7 days to use the accepted approval (Phase 3.4)
       const expiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
       request.status = 'accepted';
       request.acceptedAt = new Date();
@@ -201,7 +246,7 @@ export const handleCloneRequestAction = async (req, res) => {
       return res.json({ message: "Clone request rejected.", request });
     }
 
-    if (action === 'reject_and_block') {
+    if (action === 'reject_and_block' || action === 'reject_block') {
       request.status = 'rejected';
       request.isBlocked = true;
       await request.save();
@@ -209,7 +254,7 @@ export const handleCloneRequestAction = async (req, res) => {
       return res.json({ message: "Requester blocked from this Space.", request });
     }
 
-    return res.status(400).json({ error: "Invalid action. Must be 'accept', 'reject', or 'reject_and_block'." });
+    return res.status(400).json({ error: "Invalid action. Must be 'accept', 'reject', 'reject_and_block', 'revoke', or 'withdraw'." });
   } catch (err) {
     console.error("handleCloneRequestAction error:", err);
     return res.status(500).json({ error: "Failed to process clone request." });

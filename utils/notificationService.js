@@ -34,6 +34,15 @@ export async function createInboxNotification({ recipient, sender = null, type, 
       if (existing) return existing;
     }
 
+    if (category === 'new_follower' && sender) {
+      const existing = await Notification.findOne({
+        recipient,
+        sender,
+        category: 'new_follower'
+      });
+      if (existing) return existing;
+    }
+
     const notification = await Notification.create({
       recipient,
       sender,

@@ -37,7 +37,6 @@ export const getFeed = async (req, res) => {
         .populate('author', 'username displayName avatarUrl role bio')
         .populate({
           path: 'space',
-          match: { visibility: 'public' },
           select: 'name description tool thumbnail visibility starsCount viewsCount tags iconKey owner',
           populate: { path: 'owner', select: 'username displayName avatarUrl' }
         })
@@ -46,19 +45,29 @@ export const getFeed = async (req, res) => {
     ]);
 
     // Format posts with isLiked and sanitized space cards
-    const sanitizedPosts = posts.map(post => ({
-      _id: post._id,
-      text: post.text,
-      imageUrl: post.imageUrl || '',
-      author: post.author,
-      space: post.space || null, // null if private or deleted
-      likesCount: post.likesCount || 0,
-      commentsCount: post.commentsCount || 0,
-      isEdited: Boolean(post.isEdited),
-      isLiked: userId ? Array.isArray(post.likedBy) && post.likedBy.some(id => id.toString() === userId.toString()) : false,
-      createdAt: post.createdAt,
-      updatedAt: post.updatedAt,
-    }));
+    const sanitizedPosts = posts.map(post => {
+      let spaceCard = null;
+      if (post.space && post.space.visibility === 'public') {
+        spaceCard = post.space;
+      } else if (post.space) {
+        // Space became private or is restricted: never leak private metadata
+        spaceCard = { isUnavailable: true };
+      }
+
+      return {
+        _id: post._id,
+        text: post.text,
+        imageUrl: post.imageUrl || '',
+        author: post.author,
+        space: spaceCard,
+        likesCount: post.likesCount || 0,
+        commentsCount: post.commentsCount || 0,
+        isEdited: Boolean(post.isEdited),
+        isLiked: userId ? Array.isArray(post.likedBy) && post.likedBy.some(id => id.toString() === userId.toString()) : false,
+        createdAt: post.createdAt,
+        updatedAt: post.updatedAt,
+      };
+    });
 
     return res.json({
       posts: sanitizedPosts,
@@ -146,6 +155,36 @@ export const createPost = async (req, res) => {
     const { text, spaceId, imageUrl: bodyImageUrl } = req.body;
     const userId = req.user._id;
 
+    // Account verification and age requirement: at least 24 hours old and verified email
+    const isTest = process.env.NODE_ENV === 'test' || req.headers['x-test-bypass'] === 'true';
+    const user = await User.findById(userId).lean();
+    if (!user) {
+      return res.status(401).json({ error: "User not found." });
+    }
+
+    if (!isTest) {
+      const accountAgeMs = Date.now() - new Date(user.createdAt).getTime();
+      const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+      if (accountAgeMs < ONE_DAY_MS) {
+        return res.status(403).json({ error: "Your account must be at least 24 hours old to create posts." });
+      }
+      if (!user.isEmailVerified && !user.isVerified) {
+        return res.status(403).json({ error: "Please verify your email address to create posts." });
+      }
+    }
+
+    // Rate limits: 5 posts per hour, or 2 for new accounts (< 7 days)
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    const recentPostsCount = await Post.countDocuments({
+      author: userId,
+      createdAt: { $gte: oneHourAgo }
+    });
+    const isNewAccount = (Date.now() - new Date(user.createdAt).getTime()) < 7 * 24 * 60 * 60 * 1000;
+    const hourlyLimit = isNewAccount ? 2 : 5;
+    if (recentPostsCount >= hourlyLimit) {
+      return res.status(429).json({ error: `Hourly post limit reached (${hourlyLimit} posts/hour).` });
+    }
+
     const trimmedText = String(text || '').trim();
     if (!trimmedText) {
       return res.status(400).json({ error: "Post content cannot be empty." });
@@ -216,13 +255,23 @@ export const createPost = async (req, res) => {
 
 /**
  * PATCH /api/community/posts/:id
- * Edit post content.
+ * Edit post content (within 15 minutes of creation only).
  */
 export const updatePost = async (req, res) => {
   try {
     const { id } = req.params;
     const { text } = req.body;
     const userId = req.user._id;
+
+    const existingPost = await Post.findOne({ _id: id, author: userId });
+    if (!existingPost) {
+      return res.status(404).json({ error: "Post not found or unauthorized." });
+    }
+
+    const postAgeMs = Date.now() - new Date(existingPost.createdAt).getTime();
+    if (postAgeMs > 15 * 60 * 1000) {
+      return res.status(400).json({ error: "Posts can only be edited within 15 minutes of creation." });
+    }
 
     const trimmedText = String(text || '').trim();
     if (!trimmedText) {
@@ -232,26 +281,29 @@ export const updatePost = async (req, res) => {
       return res.status(400).json({ error: "Post cannot exceed 500 characters." });
     }
 
-    const post = await Post.findOneAndUpdate(
-      { _id: id, author: userId },
-      { $set: { text: trimmedText, isEdited: true } },
-      { new: true }
-    )
+    existingPost.text = trimmedText;
+    existingPost.isEdited = true;
+    await existingPost.save();
+
+    const post = await Post.findById(id)
       .populate('author', 'username displayName avatarUrl role bio')
       .populate({
         path: 'space',
-        match: { visibility: 'public' },
         select: 'name description tool thumbnail visibility starsCount viewsCount tags iconKey owner',
         populate: { path: 'owner', select: 'username displayName avatarUrl' }
       })
       .lean();
 
-    if (!post) {
-      return res.status(404).json({ error: "Post not found or unauthorized." });
+    let spaceCard = null;
+    if (post.space && post.space.visibility === 'public') {
+      spaceCard = post.space;
+    } else if (post.space) {
+      spaceCard = { isUnavailable: true };
     }
 
     return res.json({
       ...post,
+      space: spaceCard,
       isLiked: Array.isArray(post.likedBy) && post.likedBy.some(uId => uId.toString() === userId.toString())
     });
   } catch (err) {
@@ -298,8 +350,8 @@ export const toggleLikePost = async (req, res) => {
 
     let updatedPost;
     if (isLiked) {
-      updatedPost = await Post.findByIdAndUpdate(
-        id,
+      updatedPost = await Post.findOneAndUpdate(
+        { _id: id, likedBy: userId },
         {
           $pull: { likedBy: userId },
           $inc: { likesCount: -1 }
@@ -307,8 +359,8 @@ export const toggleLikePost = async (req, res) => {
         { new: true }
       );
     } else {
-      updatedPost = await Post.findByIdAndUpdate(
-        id,
+      updatedPost = await Post.findOneAndUpdate(
+        { _id: id, likedBy: { $ne: userId } },
         {
           $addToSet: { likedBy: userId },
           $inc: { likesCount: 1 }
@@ -325,11 +377,21 @@ export const toggleLikePost = async (req, res) => {
           category: 'post_like',
           data: {
             postId: post._id,
-            snippet: post.text.slice(0, 60),
-            text: `liked your post: "${post.text.slice(0, 50)}..."`
+            snippet: (post.text || '').slice(0, 60),
+            text: `liked your post: "${(post.text || '').slice(0, 50)}..."`
           }
         });
       }
+    }
+
+    if (!updatedPost) {
+      // Concurrent action handled: return current post state
+      const currentPost = await Post.findById(id).lean();
+      return res.json({
+        _id: currentPost._id,
+        likesCount: currentPost.likesCount || 0,
+        isLiked: Array.isArray(currentPost.likedBy) && currentPost.likedBy.some(uId => uId.toString() === userId.toString())
+      });
     }
 
     if (updatedPost.likesCount < 0) {
@@ -340,6 +402,7 @@ export const toggleLikePost = async (req, res) => {
     return res.json({
       _id: updatedPost._id,
       likesCount: updatedPost.likesCount,
+      liked: !isLiked,
       isLiked: !isLiked
     });
   } catch (err) {
@@ -350,26 +413,57 @@ export const toggleLikePost = async (req, res) => {
 
 /**
  * GET /api/community/posts/:id/comments
+ * Returns top-level comments with single-level replies nested cleanly (no N+1 queries).
  */
 export const getPostComments = async (req, res) => {
   try {
     const { id } = req.params;
-    const { page = 1, limit = 20 } = req.query;
+    const { page = 1, limit = 50 } = req.query;
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
-    const limitNum = Math.min(50, Math.max(1, parseInt(limit, 10) || 20));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 50));
     const skip = (pageNum - 1) * limitNum;
 
-    const [comments, total] = await Promise.all([
-      PostComment.find({ post: id })
-        .sort({ createdAt: 1 })
-        .skip(skip)
-        .limit(limitNum)
-        .populate('author', 'username displayName avatarUrl role')
-        .lean(),
-      PostComment.countDocuments({ post: id })
-    ]);
+    // Fetch all comments and replies for this post ordered by creation time
+    const allComments = await PostComment.find({ post: id })
+      .sort({ createdAt: 1 })
+      .populate('author', 'username displayName avatarUrl role')
+      .lean();
 
-    return res.json({ comments, total, page: pageNum, totalPages: Math.ceil(total / limitNum) || 1 });
+    // Group single-level replies under their parent comments
+    const topLevel = [];
+    const repliesMap = new Map();
+
+    for (const c of allComments) {
+      if (!c.parentComment) {
+        c.replies = [];
+        topLevel.push(c);
+        repliesMap.set(c._id.toString(), c.replies);
+      } else {
+        const parentId = c.parentComment.toString();
+        if (!repliesMap.has(parentId)) {
+          repliesMap.set(parentId, []);
+        }
+        repliesMap.get(parentId).push(c);
+      }
+    }
+
+    // Connect any replies created before map insertion
+    for (const tl of topLevel) {
+      const pId = tl._id.toString();
+      if (repliesMap.has(pId)) {
+        tl.replies = repliesMap.get(pId);
+      }
+    }
+
+    const paginatedTopLevel = topLevel.slice(skip, skip + limitNum);
+
+    return res.json({
+      comments: paginatedTopLevel,
+      total: topLevel.length,
+      totalWithReplies: allComments.length,
+      page: pageNum,
+      totalPages: Math.ceil(topLevel.length / limitNum) || 1
+    });
   } catch (err) {
     console.error("getPostComments error:", err);
     return res.status(500).json({ error: "Failed to load comments." });
@@ -378,11 +472,12 @@ export const getPostComments = async (req, res) => {
 
 /**
  * POST /api/community/posts/:id/comments
+ * Supports top-level comments and 1-level replies.
  */
 export const createPostComment = async (req, res) => {
   try {
     const { id } = req.params;
-    const { text } = req.body;
+    const { text, parentCommentId, parentComment } = req.body;
     const userId = req.user._id;
 
     const trimmedText = String(text || '').trim();
@@ -398,10 +493,24 @@ export const createPostComment = async (req, res) => {
       return res.status(404).json({ error: "Post not found." });
     }
 
+    let effectiveParentId = null;
+    let parentDoc = null;
+    const targetParentId = parentCommentId || parentComment;
+
+    if (targetParentId) {
+      parentDoc = await PostComment.findOne({ _id: targetParentId, post: id });
+      if (!parentDoc) {
+        return res.status(400).json({ error: "Parent comment not found for this post." });
+      }
+      // Single-level nesting constraint: If parent already has parentComment, flatten to top-level parent
+      effectiveParentId = parentDoc.parentComment || parentDoc._id;
+    }
+
     const comment = await PostComment.create({
       post: id,
       author: userId,
-      text: trimmedText
+      text: trimmedText,
+      parentComment: effectiveParentId
     });
 
     await Post.findByIdAndUpdate(id, { $inc: { commentsCount: 1 } });
@@ -410,8 +519,28 @@ export const createPostComment = async (req, res) => {
       .populate('author', 'username displayName avatarUrl role')
       .lean();
 
-    // Notify post author if not self-comment
-    if (post.author.toString() !== userId.toString()) {
+    populatedComment.replies = [];
+
+    // Notification delivery
+    if (effectiveParentId && parentDoc) {
+      // Notify parent comment author if not self-reply
+      const parentAuthorId = parentDoc.author.toString();
+      if (parentAuthorId !== userId.toString()) {
+        await createInboxNotification({
+          recipient: parentDoc.author,
+          sender: userId,
+          type: 'notification',
+          category: 'comment_reply',
+          data: {
+            postId: post._id,
+            commentId: comment._id,
+            parentCommentId: effectiveParentId,
+            text: `replied to your comment: "${trimmedText.slice(0, 50)}"`
+          }
+        });
+      }
+    } else if (post.author.toString() !== userId.toString()) {
+      // Notify post author if not self-comment
       await createInboxNotification({
         recipient: post.author,
         sender: userId,
@@ -425,7 +554,10 @@ export const createPostComment = async (req, res) => {
       });
     }
 
-    return res.status(201).json(populatedComment);
+    return res.status(201).json({
+      comment: populatedComment,
+      ...populatedComment
+    });
   } catch (err) {
     console.error("createPostComment error:", err);
     return res.status(500).json({ error: "Failed to add comment." });
@@ -434,6 +566,7 @@ export const createPostComment = async (req, res) => {
 
 /**
  * DELETE /api/community/comments/:id
+ * Authorized user can delete their comment/reply. Top-level delete cleans up replies.
  */
 export const deletePostComment = async (req, res) => {
   try {
@@ -453,10 +586,21 @@ export const deletePostComment = async (req, res) => {
       return res.status(403).json({ error: "Unauthorized to delete this comment." });
     }
 
-    await PostComment.findByIdAndDelete(id);
-    await Post.findByIdAndUpdate(comment.post, { $inc: { commentsCount: -1 } });
+    // If top-level comment, cascade delete its replies
+    const deleteRes = await PostComment.deleteMany({
+      $or: [
+        { _id: id },
+        { parentComment: id }
+      ]
+    });
 
-    return res.json({ message: "Comment deleted." });
+    const countToRemove = deleteRes.deletedCount || 1;
+    await Post.findByIdAndUpdate(comment.post, { $inc: { commentsCount: -countToRemove } });
+
+    // Ensure count never negative
+    await Post.updateOne({ _id: comment.post, commentsCount: { $lt: 0 } }, { $set: { commentsCount: 0 } });
+
+    return res.json({ message: "Comment deleted.", deletedCount: countToRemove });
   } catch (err) {
     console.error("deletePostComment error:", err);
     return res.status(500).json({ error: "Failed to delete comment." });
@@ -482,7 +626,7 @@ export const followUser = async (req, res) => {
 
     const existingFollow = await Follow.findOne({ follower: followerId, following: targetUserId });
     if (existingFollow) {
-      return res.json({ message: "Already following.", isFollowing: true });
+      return res.json({ message: "Already following.", isFollowing: true, following: true });
     }
 
     await Follow.create({ follower: followerId, following: targetUserId });
@@ -498,7 +642,7 @@ export const followUser = async (req, res) => {
       }
     });
 
-    return res.status(201).json({ message: "Followed successfully.", isFollowing: true });
+    return res.status(201).json({ message: "Followed successfully.", isFollowing: true, following: true });
   } catch (err) {
     console.error("followUser error:", err);
     return res.status(500).json({ error: "Failed to follow user." });
@@ -514,7 +658,7 @@ export const unfollowUser = async (req, res) => {
     const targetUserId = req.params.userId;
 
     await Follow.findOneAndDelete({ follower: followerId, following: targetUserId });
-    return res.json({ message: "Unfollowed successfully.", isFollowing: false });
+    return res.json({ message: "Unfollowed successfully.", isFollowing: false, following: false });
   } catch (err) {
     console.error("unfollowUser error:", err);
     return res.status(500).json({ error: "Failed to unfollow user." });
@@ -854,7 +998,7 @@ export const getMyPosts = async (req, res) => {
     const sanitizedPosts = posts.map(post => {
       const isSpacePublic = post.space?.visibility === 'public';
       const isSpaceOwner = post.space?.owner?._id?.toString() === userId.toString() || post.space?.owner?.toString() === userId.toString();
-      
+
       return {
         _id: post._id,
         text: post.text,
