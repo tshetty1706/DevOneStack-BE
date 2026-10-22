@@ -11,6 +11,7 @@ import Repo from '../models/Repo.js';
 import deleteFromCloudinary from '../utils/deleteFromCloudinary.js';
 import {
   verifySpaceOwnership,
+  verifySpaceViewAccess,
   logUserHistory,
   sendError
 } from '../utils/spaceHelpers.js';
@@ -58,15 +59,8 @@ export const listFolders = async (req, res) => {
   try {
     const { spaceId } = req.params;
 
-    // Check space access (owner or public/unlisted)
-    const space = await Space.findOne({
-      _id: spaceId,
-      $or: [
-        { owner: req.user._id },
-        { visibility: { $in: ['public', 'unlisted'] } }
-      ]
-    }).lean();
-
+    // Check space access (owner, collaborator, or public)
+    const space = await verifySpaceViewAccess(spaceId, req.user);
     if (!space) return res.status(404).json({ error: 'Space not found' });
 
     const rawFolders = await Folder.find({ spaceId }).sort({ createdAt: 1 }).lean();

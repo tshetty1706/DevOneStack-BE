@@ -1,6 +1,7 @@
 import Item from '../models/Item.js';
 import {
   verifySpaceOwnership,
+  verifySpaceViewAccess,
   updateSpaceResourceCount,
   logUserHistory,
   parseTags,
@@ -13,7 +14,10 @@ export const listLearnings = async (req, res) => {
     const { spaceId } = req.params;
     const { type, tag } = req.query;
 
-    const filter = { spaceId, owner: req.user._id, type: 'learning' };
+    const space = await verifySpaceViewAccess(spaceId, req.user);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
+
+    const filter = { spaceId, type: 'learning' };
     if (type && type !== 'all') filter.learningType = type;
     if (tag) filter.tags = tag.toLowerCase().trim();
 
@@ -46,9 +50,11 @@ export const searchLearnings = async (req, res) => {
     const { q } = req.query;
     const { spaceId } = req.params;
 
+    const space = await verifySpaceViewAccess(spaceId, req.user);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
+
     const items = await Item.find({
       spaceId,
-      owner: req.user._id,
       type: 'learning',
       $or: [
         { title: { $regex: q, $options: 'i' } },
@@ -80,7 +86,11 @@ export const searchLearnings = async (req, res) => {
 export const getLearning = async (req, res) => {
   try {
     const { spaceId, learningId } = req.params;
-    const item = await Item.findOne({ _id: learningId, spaceId, owner: req.user._id, type: 'learning' });
+
+    const space = await verifySpaceViewAccess(spaceId, req.user);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
+
+    const item = await Item.findOne({ _id: learningId, spaceId, type: 'learning' });
     if (!item) return res.status(404).json({ error: 'Learning not found' });
 
     res.json({

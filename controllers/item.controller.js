@@ -16,6 +16,7 @@ import { saveFileLocally, deleteLocalFile, getLocalFilePath, fetchAndCacheCloudi
 import cloudinary from '../config/cloudinary.js';
 import {
   verifySpaceOwnership,
+  verifySpaceViewAccess,
   updateSpaceResourceCount,
   logUserHistory,
   parseTags,
@@ -223,18 +224,11 @@ export const listItems = async (req, res) => {
     const { spaceId } = req.params;
     const { type, folderId, search, tag, sort } = req.query;
 
-    const space = await Space.findOne({
-      _id: spaceId,
-      $or: [
-        { owner: req.user._id },
-        { visibility: { $in: ['public', 'unlisted'] } }
-      ]
-    }).lean();
-
+    const space = await verifySpaceViewAccess(spaceId, req.user);
     if (!space) return res.status(404).json({ error: 'Space not found' });
 
     // Ensure migration if needed
-    await autoMigrateLegacyItems(spaceId, req.user._id);
+    await autoMigrateLegacyItems(spaceId, space.owner || req.user._id);
 
     const filter = { spaceId };
     if (type && type !== 'all') {
@@ -295,14 +289,7 @@ export const getItem = async (req, res) => {
   try {
     const { spaceId, itemId } = req.params;
 
-    const space = await Space.findOne({
-      _id: spaceId,
-      $or: [
-        { owner: req.user._id },
-        { visibility: { $in: ['public', 'unlisted'] } }
-      ]
-    }).lean();
-
+    const space = await verifySpaceViewAccess(spaceId, req.user);
     if (!space) return res.status(404).json({ error: 'Space not found' });
 
     const item = await Item.findOne({ _id: itemId, spaceId }).lean();

@@ -6,6 +6,7 @@ import axios from 'axios';
 import cloudinary from '../config/cloudinary.js';
 import {
   verifySpaceOwnership,
+  verifySpaceViewAccess,
   updateSpaceResourceCount,
   logUserHistory,
   parseTags,
@@ -18,7 +19,10 @@ export const listDocs = async (req, res) => {
     const { spaceId } = req.params;
     const { lastId, tag } = req.query;
 
-    const filter = { spaceId, owner: req.user._id, type: { $in: ['doc', 'image'] } };
+    const space = await verifySpaceViewAccess(spaceId, req.user);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
+
+    const filter = { spaceId, type: { $in: ['doc', 'image'] } };
     if (lastId) filter._id = { $gt: lastId };
     if (tag) filter.tags = tag.toLowerCase().trim();
 
@@ -208,6 +212,10 @@ export const uploadDoc = async (req, res) => {
 export const getDocFile = async (req, res) => {
   try {
     const { spaceId, docId } = req.params;
+
+    const space = await verifySpaceViewAccess(spaceId, req.user);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
+
     const item = await Item.findOne({ _id: docId, spaceId });
     if (!item) return res.status(404).json({ error: 'Not found' });
 
@@ -327,7 +335,12 @@ export const getDocFile = async (req, res) => {
 export const updateDoc = async (req, res) => {
   try {
     const { title, caption, tags, isPinned, folderId } = req.body;
-    const item = await Item.findOne({ _id: req.params.docId, owner: req.user._id });
+    const { spaceId, docId } = req.params;
+
+    const space = await verifySpaceOwnership(spaceId, req.user._id);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
+
+    const item = await Item.findOne({ _id: docId, spaceId });
     if (!item) return res.status(404).json({ error: 'Not found' });
 
     if (title !== undefined) item.title = title.trim();
@@ -362,9 +375,14 @@ export const updateDoc = async (req, res) => {
 // DELETE /api/spaces/:spaceId/docs/:docId
 export const deleteDoc = async (req, res) => {
   try {
+    const { spaceId, docId } = req.params;
+
+    const space = await verifySpaceOwnership(spaceId, req.user._id);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
+
     const item = await Item.findOneAndDelete({
-      _id: req.params.docId,
-      owner: req.user._id,
+      _id: docId,
+      spaceId,
     });
     if (!item) return res.status(404).json({ error: 'Not found' });
 
@@ -395,9 +413,11 @@ export const searchDocs = async (req, res) => {
     const { q } = req.query;
     const { spaceId } = req.params;
 
+    const space = await verifySpaceViewAccess(spaceId, req.user);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
+
     const items = await Item.find({
       spaceId,
-      owner: req.user._id,
       type: { $in: ['doc', 'image'] },
       $or: [
         { title: { $regex: q, $options: 'i' } },

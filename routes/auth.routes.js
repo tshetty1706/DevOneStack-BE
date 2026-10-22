@@ -15,7 +15,7 @@ import {
 } from "../controllers/auth.controller.js";
 import protectRoute from "../middleware/protectRoute.js";
 import upload from "../config/multer.js";
-import { loginLimiter, signupLimiter, forgotPasswordLimiter } from "../middleware/rateLimiter.js";
+import { loginLimiter, signupLimiter, forgotPasswordLimiter, resetPasswordLimiter } from "../middleware/rateLimiter.js";
 import { signAccessToken, signRefreshToken } from "../utils/jwt.js";
 import { ensureUserHasUsername } from "../utils/usernameGenerator.js";
 
@@ -28,7 +28,7 @@ router.post("/logout", logout);
 router.get("/verify-email/:token", verifyEmail);
 router.post("/resend-verification", signupLimiter, resendVerification);
 router.post("/forgot-password", forgotPasswordLimiter, forgotPassword);
-router.post("/reset-password/:token", resetPassword);
+router.post("/reset-password/:token", resetPasswordLimiter, resetPassword);
 
 // Session Verification & Refresh
 router.get("/me", protectRoute, getMe);
@@ -83,8 +83,8 @@ router.get(
         usernameGenerated = result.generated;
       }
 
-      const accessToken = signAccessToken(user._id);
-      const refreshToken = signRefreshToken(user._id);
+      const accessToken = signAccessToken(user._id, user.tokenVersion || 0);
+      const refreshToken = signRefreshToken(user._id, user.tokenVersion || 0);
 
       res.cookie("refreshToken", refreshToken, {
         httpOnly: true,

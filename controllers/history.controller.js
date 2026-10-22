@@ -1,4 +1,6 @@
 import History from "../models/History.js";
+import Space from "../models/Space.js";
+import { can } from "../utils/authorization.js";
 
 export const getHistory = async (req, res) => {
   try {
@@ -7,6 +9,11 @@ export const getHistory = async (req, res) => {
 
     const filter = {};
     if (spaceId) {
+      const space = await Space.findById(spaceId);
+      if (!space || !can(req.user, 'manage_space', space)) {
+        // Space activity is owner-only per security architecture; return empty array for unauthorized viewers
+        return res.json([]);
+      }
       filter['meta.spaceId'] = spaceId;
     } else {
       filter.owner = req.user._id;

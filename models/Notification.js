@@ -12,6 +12,7 @@ const NotificationSchema = new mongoose.Schema({
       'new_follower',
       'post_like',
       'post_comment',
+      'comment_reply',
       'space_starred',
       'clone_completed',
       'request_accepted',

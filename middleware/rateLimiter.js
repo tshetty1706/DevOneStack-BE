@@ -26,11 +26,20 @@ export const forgotPasswordLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+export const resetPasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: isProd ? 5 : 50, // 5 per 15 mins in prod, 50 in dev
+  message: { error: "Too many attempts. Try again in 15 minutes." },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // Community Post rate limiter (5/hour in prod, 50 in dev)
 export const postLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: isProd ? 5 : 50,
   keyGenerator: (req) => req.user?._id?.toString() || req.ip,
+  validate: false,
   message: { error: "Post limit reached (5 posts/hour). Please try again later." },
   standardHeaders: true,
   legacyHeaders: false,
@@ -41,6 +50,7 @@ export const commentLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: isProd ? 20 : 100,
   keyGenerator: (req) => req.user?._id?.toString() || req.ip,
+  validate: false,
   message: { error: "Comment limit reached (20 comments/hour). Please try again later." },
   standardHeaders: true,
   legacyHeaders: false,
@@ -51,6 +61,7 @@ export const followLimiter = rateLimit({
   windowMs: 24 * 60 * 60 * 1000,
   max: isProd ? 100 : 500,
   keyGenerator: (req) => req.user?._id?.toString() || req.ip,
+  validate: false,
   message: { error: "Daily follow limit reached (100 follows/day)." },
   standardHeaders: true,
   legacyHeaders: false,
@@ -61,6 +72,7 @@ export const cloneLimiter = rateLimit({
   windowMs: 24 * 60 * 60 * 1000,
   max: isProd ? 10 : 100,
   keyGenerator: (req) => req.user?._id?.toString() || req.ip,
+  validate: false,
   message: { error: "Daily clone limit reached (10 clones/day)." },
   standardHeaders: true,
   legacyHeaders: false,

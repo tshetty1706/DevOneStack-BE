@@ -44,7 +44,7 @@ export const getCollaborators = async (req, res) => {
       collaborators: space.collaborators || [],
       pendingInvites,
       owner: space.owner,
-      maxCollaborators: 5,
+      maxCollaborators: 10,
     });
   } catch (err) {
     console.error("getCollaborators error:", err);
@@ -55,7 +55,7 @@ export const getCollaborators = async (req, res) => {
 /**
  * POST /api/spaces/:spaceId/collaborators/invite
  * or POST /api/collaborators/invite
- * Owner invites a user by EXACT username only (max 5 collaborators per space).
+ * Owner invites a user by EXACT username only (max 10 collaborators per space).
  */
 export const inviteCollaborator = async (req, res) => {
   try {
@@ -76,14 +76,14 @@ export const inviteCollaborator = async (req, res) => {
       return res.status(403).json({ error: "Only the Space owner can invite collaborators." });
     }
 
-    // Check clone permissions if cloned from private space
-    if (space.clonedFromPrivate && space.clonePermissions?.allowCollaborators === false) {
-      return res.status(403).json({ error: "Collaboration is disabled for this cloned Space by the original owner." });
+    // Check clone permissions using canonical authorization engine (Phase 2.2 & 4.1B)
+    if (!can(req.user, 'add_collaborator', space)) {
+      return res.status(403).json({ error: "Collaboration is disabled for this cloned Space." });
     }
 
-    // Limit: Max 5 collaborators
-    if ((space.collaborators?.length || 0) >= 5) {
-      return res.status(400).json({ error: "Maximum limit of 5 collaborators reached for this Space." });
+    // Limit: Max 10 collaborators (Phase 6.1)
+    if ((space.collaborators?.length || 0) >= 10) {
+      return res.status(400).json({ error: "Maximum limit of 10 collaborators reached for this Space." });
     }
 
     // Lookup user by EXACT username (case-insensitive)

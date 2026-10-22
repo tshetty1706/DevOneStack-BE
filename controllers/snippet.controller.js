@@ -1,6 +1,7 @@
 import Item from '../models/Item.js';
 import {
   verifySpaceOwnership,
+  verifySpaceViewAccess,
   updateSpaceResourceCount,
   logUserHistory,
   parseTags,
@@ -13,7 +14,10 @@ export const listSnippets = async (req, res) => {
     const { spaceId } = req.params;
     const { lastId, tag } = req.query;
 
-    const filter = { spaceId, owner: req.user._id, type: 'snippet' };
+    const space = await verifySpaceViewAccess(spaceId, req.user);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
+
+    const filter = { spaceId, type: 'snippet' };
     if (lastId) filter._id = { $gt: lastId };
     if (tag) filter.tags = tag.toLowerCase().trim();
 
@@ -101,9 +105,14 @@ export const createSnippet = async (req, res) => {
 };
 
 // GET /api/spaces/:spaceId/snippets/:id/content
+// GET /api/spaces/:spaceId/snippets/:id/content
 export const getSnippetContent = async (req, res) => {
   try {
-    const item = await Item.findOne({ _id: req.params.id, owner: req.user._id, type: 'snippet' });
+    const { spaceId, id } = req.params;
+    const space = await verifySpaceViewAccess(spaceId, req.user);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
+
+    const item = await Item.findOne({ _id: id, spaceId, type: 'snippet' });
     if (!item) return res.status(404).json({ error: 'Snippet not found' });
 
     res.json({ code: item.content || '' });
@@ -121,7 +130,7 @@ export const updateSnippet = async (req, res) => {
     const space = await verifySpaceOwnership(spaceId, req.user._id);
     if (!space) return res.status(404).json({ error: 'Space not found' });
 
-    const item = await Item.findOne({ _id: id, spaceId, owner: req.user._id, type: 'snippet' });
+    const item = await Item.findOne({ _id: id, spaceId, type: 'snippet' });
     if (!item) return res.status(404).json({ error: 'Snippet not found' });
 
     if (name || title) item.title = (title || name).trim();
@@ -165,7 +174,7 @@ export const deleteSnippet = async (req, res) => {
     const space = await verifySpaceOwnership(spaceId, req.user._id);
     if (!space) return res.status(404).json({ error: 'Space not found' });
 
-    const item = await Item.findOneAndDelete({ _id: id, spaceId, owner: req.user._id, type: 'snippet' });
+    const item = await Item.findOneAndDelete({ _id: id, spaceId, type: 'snippet' });
     if (!item) return res.status(404).json({ error: 'Snippet not found' });
 
     await updateSpaceResourceCount(spaceId, 'snippetsCount', -1);
@@ -182,9 +191,11 @@ export const searchSnippets = async (req, res) => {
     const { q } = req.query;
     const { spaceId } = req.params;
 
+    const space = await verifySpaceViewAccess(spaceId, req.user);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
+
     const items = await Item.find({
       spaceId,
-      owner: req.user._id,
       type: 'snippet',
       $or: [
         { title: { $regex: q, $options: 'i' } },
@@ -221,7 +232,10 @@ export const updateSnippetContent = async (req, res) => {
     const { code } = req.body;
     const { spaceId, id } = req.params;
 
-    const item = await Item.findOne({ _id: id, spaceId, owner: req.user._id, type: 'snippet' });
+    const space = await verifySpaceOwnership(spaceId, req.user._id);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
+
+    const item = await Item.findOne({ _id: id, spaceId, type: 'snippet' });
     if (!item) return res.status(404).json({ error: 'Snippet not found' });
 
     item.content = code || '';
@@ -237,8 +251,11 @@ export const updateSnippetContent = async (req, res) => {
 // POST /api/spaces/:spaceId/snippets/:id/use
 export const useSnippet = async (req, res) => {
   try {
-    const { id } = req.params;
-    const item = await Item.findOne({ _id: id, owner: req.user._id, type: 'snippet' });
+    const { spaceId, id } = req.params;
+    const space = await verifySpaceViewAccess(spaceId, req.user);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
+
+    const item = await Item.findOne({ _id: id, spaceId, type: 'snippet' });
     if (!item) return res.status(404).json({ error: 'Snippet not found' });
 
     res.json({ message: 'Used snippet recorded' });
@@ -255,7 +272,7 @@ export const togglePin = async (req, res) => {
     const space = await verifySpaceOwnership(spaceId, req.user._id);
     if (!space) return res.status(404).json({ error: 'Space not found' });
 
-    const item = await Item.findOne({ _id: id, spaceId, owner: req.user._id, type: 'snippet' });
+    const item = await Item.findOne({ _id: id, spaceId, type: 'snippet' });
     if (!item) return res.status(404).json({ error: 'Snippet not found' });
 
     item.isPinned = !item.isPinned;

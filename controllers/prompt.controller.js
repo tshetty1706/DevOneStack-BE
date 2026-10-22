@@ -2,6 +2,7 @@ import Item from '../models/Item.js';
 import DOMPurify from 'isomorphic-dompurify';
 import {
   verifySpaceOwnership,
+  verifySpaceViewAccess,
   updateSpaceResourceCount,
   logUserHistory,
   parseTags,
@@ -14,7 +15,10 @@ export const listPrompts = async (req, res) => {
     const { spaceId } = req.params;
     const { lastId, tag } = req.query;
 
-    const filter = { spaceId, owner: req.user._id, type: 'prompt' };
+    const space = await verifySpaceViewAccess(spaceId, req.user);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
+
+    const filter = { spaceId, type: 'prompt' };
     if (lastId) filter._id = { $gt: lastId };
     if (tag) filter.tags = tag.toLowerCase().trim();
 
@@ -107,7 +111,7 @@ export const updatePrompt = async (req, res) => {
     const space = await verifySpaceOwnership(spaceId, req.user._id);
     if (!space) return res.status(404).json({ error: 'Space not found' });
 
-    const item = await Item.findOne({ _id: id, spaceId, owner: req.user._id, type: 'prompt' });
+    const item = await Item.findOne({ _id: id, spaceId, type: 'prompt' });
     if (!item) return res.status(404).json({ error: 'Prompt not found' });
 
     if (title !== undefined) item.title = title.trim();
@@ -147,7 +151,7 @@ export const deletePrompt = async (req, res) => {
     const space = await verifySpaceOwnership(spaceId, req.user._id);
     if (!space) return res.status(404).json({ error: 'Space not found' });
 
-    const item = await Item.findOneAndDelete({ _id: id, spaceId, owner: req.user._id, type: 'prompt' });
+    const item = await Item.findOneAndDelete({ _id: id, spaceId, type: 'prompt' });
     if (!item) return res.status(404).json({ error: 'Prompt not found' });
 
     await updateSpaceResourceCount(spaceId, 'promptsCount', -1);
@@ -164,9 +168,11 @@ export const searchPrompts = async (req, res) => {
     const { q } = req.query;
     const { spaceId } = req.params;
 
+    const space = await verifySpaceViewAccess(spaceId, req.user);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
+
     const items = await Item.find({
       spaceId,
-      owner: req.user._id,
       type: 'prompt',
       $or: [
         { title: { $regex: q, $options: 'i' } },
@@ -200,8 +206,11 @@ export const searchPrompts = async (req, res) => {
 // POST /api/spaces/:spaceId/prompts/:id/use
 export const usePrompt = async (req, res) => {
   try {
-    const { id } = req.params;
-    const item = await Item.findOne({ _id: id, owner: req.user._id, type: 'prompt' });
+    const { spaceId, id } = req.params;
+    const space = await verifySpaceViewAccess(spaceId, req.user);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
+
+    const item = await Item.findOne({ _id: id, spaceId, type: 'prompt' });
     if (!item) return res.status(404).json({ error: 'Prompt not found' });
 
     res.json({ message: 'Used prompt recorded' });
@@ -218,7 +227,7 @@ export const togglePin = async (req, res) => {
     const space = await verifySpaceOwnership(spaceId, req.user._id);
     if (!space) return res.status(404).json({ error: 'Space not found' });
 
-    const item = await Item.findOne({ _id: id, spaceId, owner: req.user._id, type: 'prompt' });
+    const item = await Item.findOne({ _id: id, spaceId, type: 'prompt' });
     if (!item) return res.status(404).json({ error: 'Prompt not found' });
 
     item.isPinned = !item.isPinned;

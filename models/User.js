@@ -6,6 +6,7 @@ const UserSchema = new mongoose.Schema({
   email: { type: String, unique: true, sparse: true, lowercase: true, trim: true },
   passwordHash: { type: String, select: false },
   googleId: { type: String, unique: true, sparse: true },
+  githubId: { type: String, unique: true, sparse: true },
   avatarUrl: { type: String },
   googleAvatarUrl: { type: String },
   displayName: { type: String },
@@ -30,12 +31,13 @@ const UserSchema = new mongoose.Schema({
       endYear: { type: String, default: '' },
     }
   ],
-  provider: { type: String, enum: ['local', 'google'], default: 'local' },
+  provider: { type: String, enum: ['local', 'google', 'github'], default: 'local' },
   isVerified: { type: Boolean, default: false },
   verifyToken: { type: String, select: false },
   verifyTokenExpiry: { type: Date, select: false },
   resetToken: { type: String, select: false },
   resetTokenExpiry: { type: Date, select: false },
+  tokenVersion: { type: Number, default: 0 },
   loginAttempts: { type: Number, default: 0 },
   lockUntil: { type: Date },
 }, { timestamps: true });

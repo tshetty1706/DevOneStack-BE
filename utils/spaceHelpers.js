@@ -1,15 +1,41 @@
 import Space from '../models/Space.js';
 import History from '../models/History.js';
+import { can } from './authorization.js';
 
 /**
- * Verifies that a Space exists and belongs to the given user.
+ * Verifies that a Space exists and that the user is authorized to perform the action.
+ * Defaults to 'edit_items' which allows space owner and editor collaborators.
  * @param {string} spaceId
- * @param {string} userId
+ * @param {string|object} userId
+ * @param {string} [requiredAction='edit_items']
  * @returns {Promise<Space|null>}
  */
-export async function verifySpaceOwnership(spaceId, userId) {
+export async function verifySpaceOwnership(spaceId, userId, requiredAction = 'edit_items') {
   if (!spaceId || !userId) return null;
-  return Space.findOne({ _id: spaceId, owner: userId });
+  const space = await Space.findById(spaceId);
+  if (!space) return null;
+
+  if (!can(userId, requiredAction, space)) {
+    return null;
+  }
+  return space;
+}
+
+/**
+ * Verifies that a Space exists and that the user is authorized to view it.
+ * @param {string} spaceId
+ * @param {string|object} userId
+ * @returns {Promise<Space|null>}
+ */
+export async function verifySpaceViewAccess(spaceId, userId) {
+  if (!spaceId) return null;
+  const space = await Space.findById(spaceId);
+  if (!space) return null;
+
+  if (!can(userId, 'view', space)) {
+    return null;
+  }
+  return space;
 }
 
 /**

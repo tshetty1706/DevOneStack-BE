@@ -1,6 +1,7 @@
 import Item from '../models/Item.js';
 import {
   verifySpaceOwnership,
+  verifySpaceViewAccess,
   updateSpaceResourceCount,
   logUserHistory,
   parseTags,
@@ -13,7 +14,10 @@ export const listRepos = async (req, res) => {
     const { spaceId } = req.params;
     const { lastId, tag } = req.query;
 
-    const filter = { spaceId, owner: req.user._id, type: 'repo' };
+    const space = await verifySpaceViewAccess(spaceId, req.user);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
+
+    const filter = { spaceId, type: 'repo' };
     if (lastId) filter._id = { $gt: lastId };
     if (tag) filter.tags = tag.toLowerCase().trim();
 
@@ -109,7 +113,7 @@ export const updateRepo = async (req, res) => {
     const space = await verifySpaceOwnership(spaceId, req.user._id);
     if (!space) return res.status(404).json({ error: 'Space not found' });
 
-    const item = await Item.findOne({ _id: id, spaceId, owner: req.user._id, type: 'repo' });
+    const item = await Item.findOne({ _id: id, spaceId, type: 'repo' });
     if (!item) return res.status(404).json({ error: 'Repository not found' });
 
     if (name !== undefined || title !== undefined) {
@@ -154,7 +158,7 @@ export const deleteRepo = async (req, res) => {
     const space = await verifySpaceOwnership(spaceId, req.user._id);
     if (!space) return res.status(404).json({ error: 'Space not found' });
 
-    const item = await Item.findOneAndDelete({ _id: id, spaceId, owner: req.user._id, type: 'repo' });
+    const item = await Item.findOneAndDelete({ _id: id, spaceId, type: 'repo' });
     if (!item) return res.status(404).json({ error: 'Repository not found' });
 
     await updateSpaceResourceCount(spaceId, 'reposCount', -1);
@@ -171,9 +175,11 @@ export const searchRepos = async (req, res) => {
     const { q } = req.query;
     const { spaceId } = req.params;
 
+    const space = await verifySpaceViewAccess(spaceId, req.user);
+    if (!space) return res.status(404).json({ error: 'Space not found' });
+
     const items = await Item.find({
       spaceId,
-      owner: req.user._id,
       type: 'repo',
       $or: [
         { title: { $regex: q, $options: 'i' } },
@@ -213,7 +219,7 @@ export const togglePin = async (req, res) => {
     const space = await verifySpaceOwnership(spaceId, req.user._id);
     if (!space) return res.status(404).json({ error: 'Space not found' });
 
-    const item = await Item.findOne({ _id: id, spaceId, owner: req.user._id, type: 'repo' });
+    const item = await Item.findOne({ _id: id, spaceId, type: 'repo' });
     if (!item) return res.status(404).json({ error: 'Repository not found' });
 
     item.isPinned = !item.isPinned;

@@ -80,6 +80,8 @@ export const getSpace = async (req, res) => {
     const space = await Space.findById(id)
       .populate('owner', 'username displayName avatarUrl')
       .populate('collaborators.user', 'username displayName avatarUrl')
+      .populate('clonedFromOwner', 'username displayName avatarUrl')
+      .populate('clonedFrom', 'name visibility')
       .lean();
 
     if (!space) {
@@ -108,6 +110,46 @@ export const getSpace = async (req, res) => {
         }
       }
     }
+
+    // Lineage & Attribution security (Phase 5.1):
+    // Link to source only if public. For private sources, display generic attribution and sanitize private owner/source details.
+    if (space.clonedFrom) {
+      if (space.clonedFromPrivate) {
+        space.clonedAttribution = {
+          isPrivate: true,
+          label: 'Cloned from a private Space'
+        };
+        delete space.clonedFromOwner;
+        delete space.clonedFrom;
+      } else if (space.clonedFrom?.visibility === 'public' && space.clonedFromOwner?.username) {
+        space.clonedAttribution = {
+          isPrivate: false,
+          label: `Cloned from @${space.clonedFromOwner.username}`,
+          username: space.clonedFromOwner.username,
+          spaceId: space.clonedFrom._id,
+          spaceName: space.clonedFrom.name
+        };
+      } else {
+        space.clonedAttribution = {
+          isPrivate: true,
+          label: 'Cloned from a private Space'
+        };
+        delete space.clonedFromOwner;
+        delete space.clonedFrom;
+      }
+    }
+
+    // Attach authoritative role and permission flags
+    const isSpaceOwner = Boolean(req.user?._id && space.owner?._id && req.user._id.toString() === space.owner._id.toString());
+    const userCollab = space.collaborators?.find(c => {
+      const cId = c.user?._id ? c.user._id.toString() : c.user?.toString();
+      return cId && req.user?._id && cId === req.user._id.toString();
+    });
+    const collabRole = userCollab?.role;
+    space.currentUserRole = isSpaceOwner ? 'owner' : (collabRole || 'visitor');
+    space.isOwner = isSpaceOwner;
+    space.canEdit = isSpaceOwner || collabRole === 'editor';
+    space.canManage = isSpaceOwner;
 
     return res.json(space);
   } catch (err) {
@@ -210,7 +252,7 @@ export const createSpace = async (req, res) => {
 
 /**
  * PATCH /api/spaces/:id
- * Update a space with secret scanning on visibility changes.
+ * Update a space with secret scanning on visibility changes and strict clone permission enforcement.
  */
 export const updateSpace = async (req, res) => {
   try {
@@ -267,32 +309,48 @@ export const updateSpace = async (req, res) => {
       update.requestDescription = String(requestDescription).trim();
     }
 
-    // Request link token management
+    let plaintextToken = null;
+
+    // Request link token management with clone permission enforcement
     if (requestLinkEnabled !== undefined) {
+      if (Boolean(requestLinkEnabled) && !can(req.user, 'enable_request_link', existingSpace)) {
+        return res.status(403).json({ error: "Further cloning is disabled for this cloned Space." });
+      }
       update.requestLinkEnabled = Boolean(requestLinkEnabled);
       if (update.requestLinkEnabled && (!existingSpace.requestLinkToken || regenerateRequestToken)) {
-        update.requestLinkToken = crypto.randomBytes(16).toString('hex');
+        plaintextToken = crypto.randomBytes(16).toString('hex');
+        update.requestLinkToken = crypto.createHash('sha256').update(plaintextToken).digest('hex');
       }
     } else if (regenerateRequestToken) {
-      update.requestLinkToken = crypto.randomBytes(16).toString('hex');
+      if (!can(req.user, 'enable_request_link', existingSpace)) {
+        return res.status(403).json({ error: "Further cloning is disabled for this cloned Space." });
+      }
+      plaintextToken = crypto.randomBytes(16).toString('hex');
+      update.requestLinkToken = crypto.createHash('sha256').update(plaintextToken).digest('hex');
     }
 
-    // Visibility update & Secret Scanning
+    // Visibility update & Secret Scanning & Clone Permission enforcement
     if (visibility !== undefined && ['public', 'private'].includes(visibility)) {
-      if (visibility === 'public' && existingSpace.visibility !== 'public') {
-        // Scan space metadata and all items
-        const items = await Item.find({ spaceId: id }).select('title content preview codeExample url').lean();
-        const scanPayload = {
-          name: update.name || existingSpace.name,
-          description: update.description || existingSpace.description,
-          readme: readme !== undefined ? readme : existingSpace.readme,
-          items
-        };
-        const scanResult = scanForSecrets(scanPayload);
-        if (scanResult.hasSecrets) {
-          return res.status(400).json({
-            error: `Cannot make Space public: potential secrets or credentials detected (${scanResult.findings.join(', ')}). Please remove sensitive data first.`
-          });
+      if (visibility === 'public') {
+        if (!can(req.user, 'publish', existingSpace)) {
+          return res.status(403).json({ error: "Publishing is disabled for this cloned Space. It must remain private." });
+        }
+
+        if (existingSpace.visibility !== 'public') {
+          // Scan space metadata and all items
+          const items = await Item.find({ spaceId: id }).select('title content preview codeExample url').lean();
+          const scanPayload = {
+            name: update.name || existingSpace.name,
+            description: update.description || existingSpace.description,
+            readme: readme !== undefined ? readme : existingSpace.readme,
+            items
+          };
+          const scanResult = scanForSecrets(scanPayload);
+          if (scanResult.hasSecrets) {
+            return res.status(400).json({
+              error: `Cannot make Space public: potential secrets or credentials detected (${scanResult.findings.join(', ')}). Please remove sensitive data first.`
+            });
+          }
         }
       }
       update.visibility = visibility;
@@ -342,12 +400,94 @@ export const updateSpace = async (req, res) => {
       await logUserHistory(req.user._id, 'updated_space', `Updated Space "${space.name}"`, { spaceId: id });
     }
 
-    return res.json(space);
+    const spaceObj = space.toObject ? space.toObject() : space;
+    if (plaintextToken) {
+      spaceObj.requestLinkToken = plaintextToken;
+    }
+
+    return res.json(spaceObj);
   } catch (err) {
     console.error("updateSpace error:", err);
     return res.status(500).json({ error: "Something went wrong on our end. Try again shortly." });
   }
 };
+
+/**
+ * POST /api/spaces/:spaceId/request-link
+ */
+export const toggleRequestLink = async (req, res) => {
+  try {
+    const spaceId = req.params.spaceId || req.params.id;
+    const { enabled, description } = req.body;
+    const space = await Space.findById(spaceId);
+    if (!space) return res.status(404).json({ error: "Space not found" });
+
+    if (!can(req.user, 'manage_space', space)) {
+      return res.status(404).json({ error: "Space not found" });
+    }
+
+    if (enabled && !can(req.user, 'enable_request_link', space)) {
+      return res.status(403).json({ error: "Further cloning is disabled for this cloned Space." });
+    }
+
+    let plaintextToken = null;
+    const update = {
+      requestLinkEnabled: Boolean(enabled),
+      ...(description !== undefined ? { requestDescription: String(description).trim() } : {})
+    };
+
+    if (update.requestLinkEnabled && !space.requestLinkToken) {
+      plaintextToken = crypto.randomBytes(16).toString('hex');
+      update.requestLinkToken = crypto.createHash('sha256').update(plaintextToken).digest('hex');
+    }
+
+    const updated = await Space.findByIdAndUpdate(spaceId, update, { new: true });
+    return res.json({
+      requestLinkEnabled: updated.requestLinkEnabled,
+      requestLinkToken: plaintextToken || (space.requestLinkToken ? 'active' : null),
+      requestDescription: updated.requestDescription
+    });
+  } catch (err) {
+    console.error("toggleRequestLink error:", err);
+    return res.status(500).json({ error: "Failed to update request link settings." });
+  }
+};
+
+/**
+ * POST /api/spaces/:spaceId/request-link/regenerate
+ */
+export const regenerateRequestLink = async (req, res) => {
+  try {
+    const spaceId = req.params.spaceId || req.params.id;
+    const space = await Space.findById(spaceId);
+    if (!space) return res.status(404).json({ error: "Space not found" });
+
+    if (!can(req.user, 'manage_space', space)) {
+      return res.status(404).json({ error: "Space not found" });
+    }
+
+    if (!can(req.user, 'enable_request_link', space)) {
+      return res.status(403).json({ error: "Further cloning is disabled for this cloned Space." });
+    }
+
+    const plaintextToken = crypto.randomBytes(16).toString('hex');
+    const hashedToken = crypto.createHash('sha256').update(plaintextToken).digest('hex');
+
+    await Space.findByIdAndUpdate(spaceId, {
+      requestLinkToken: hashedToken,
+      requestLinkEnabled: true
+    });
+
+    return res.json({
+      requestLinkEnabled: true,
+      requestLinkToken: plaintextToken
+    });
+  } catch (err) {
+    console.error("regenerateRequestLink error:", err);
+    return res.status(500).json({ error: "Failed to regenerate request link." });
+  }
+};
+
 
 /**
  * POST /api/spaces/:id/star
