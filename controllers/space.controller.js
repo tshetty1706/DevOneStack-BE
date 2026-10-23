@@ -34,13 +34,8 @@ export const getSpaces = async (req, res) => {
     } else if (tab === 'archived') {
       query = { owner: ownerId, isArchived: true };
     } else if (tab === 'shared') {
-      // Spaces where user is a collaborator or public spaces
-      query = {
-        $or: [
-          { 'collaborators.user': ownerId },
-          { owner: { $ne: ownerId }, visibility: 'public' }
-        ]
-      };
+      // Spaces where user is an authorized collaborator
+      query = { 'collaborators.user': ownerId };
     } else if (tab === 'mine') {
       query = { owner: ownerId, isArchived: { $ne: true } };
     } else {
@@ -588,21 +583,23 @@ export const deleteSpace = async (req, res) => {
       Doc.deleteMany({ spaceId }).catch(() => {}),
       Learning.deleteMany({ spaceId }).catch(() => {}),
       Snippet.deleteMany({ spaceId }).catch(() => {}),
-      SnippetContent.deleteMany({}).catch(() => {}),
       Repo.deleteMany({ spaceId }).catch(() => {}),
       Prompt.deleteMany({ spaceId }).catch(() => {}),
       Community.deleteMany({ spaceId }).catch(() => {}),
-      History.deleteMany({ 'meta.spaceId': spaceId }),
+      History.deleteMany({ 'meta.spaceId': spaceId }).catch(() => {}),
     ]);
 
-    await Promise.allSettled(
-      cloudinaryItems.map(item =>
-        deleteFromCloudinary(
-          item.cloudinaryPublicId,
-          (item.docType === 'pdf' || item.type === 'pdf') ? 'raw' : 'image'
+    // Asynchronous Cloudinary asset cleanup (non-blocking for fast UI response)
+    if (cloudinaryItems && cloudinaryItems.length > 0) {
+      Promise.allSettled(
+        cloudinaryItems.map(item =>
+          deleteFromCloudinary(
+            item.cloudinaryPublicId,
+            (item.docType === 'pdf' || item.type === 'pdf') ? 'raw' : 'image'
+          )
         )
-      )
-    );
+      ).catch(err => console.error('Cloudinary background cleanup error:', err));
+    }
 
     return res.json({ message: "Space deleted successfully" });
   } catch (err) {

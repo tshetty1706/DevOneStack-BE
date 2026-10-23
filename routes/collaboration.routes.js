@@ -3,7 +3,8 @@ import {
   getCollaborators,
   inviteCollaborator,
   removeCollaborator,
-  updateCollaboratorRole
+  updateCollaboratorRole,
+  cancelInvite
 } from "../controllers/collaboration.controller.js";
 import protectRoute from "../middleware/protectRoute.js";
 
@@ -13,6 +14,7 @@ router.use(protectRoute);
 
 router.get("/:spaceId", getCollaborators);
 router.post("/invite", inviteCollaborator);
+router.delete("/:spaceId/invites/:inviteId", cancelInvite);
 router.delete("/:spaceId/:collaboratorUserId", removeCollaborator);
 router.patch("/:spaceId/:collaboratorUserId", updateCollaboratorRole);
 

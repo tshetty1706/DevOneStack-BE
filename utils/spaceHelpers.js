@@ -62,6 +62,32 @@ export async function updateSpaceResourceCount(spaceId, countField, delta = 1) {
  */
 export async function logUserHistory(userId, action, label, meta = {}) {
   try {
+    // Consolidate continuous edits (e.g. notes autosave, readme edits, folder updates) within a 30-minute session window
+    if (action && action.startsWith('updated_')) {
+      const windowStart = new Date(Date.now() - 30 * 60 * 1000);
+      const matchQuery = {
+        owner: userId,
+        action,
+        createdAt: { $gte: windowStart },
+      };
+
+      if (meta?.itemId) {
+        matchQuery['meta.itemId'] = meta.itemId;
+      } else if (meta?.spaceId) {
+        matchQuery['meta.spaceId'] = meta.spaceId;
+      } else if (meta?.folderId) {
+        matchQuery['meta.folderId'] = meta.folderId;
+      }
+
+      const existing = await History.findOne(matchQuery);
+      if (existing) {
+        existing.label = label;
+        existing.meta = { ...existing.meta, ...meta };
+        existing.createdAt = new Date(); // Refresh timestamp so recent activity remains ordered by latest edit
+        return await existing.save();
+      }
+    }
+
     return await History.create({
       owner: userId,
       action,
