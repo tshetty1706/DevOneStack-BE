@@ -32,6 +32,9 @@ export const getCollaborators = async (req, res) => {
     }
 
     const isOwner = space.owner?._id?.toString() === userId.toString() || space.owner?.toString() === userId.toString();
+    const cleanCollaborators = (space.collaborators || []).filter(c => c && c.user);
+    const userCollab = cleanCollaborators.find(c => (c.user?._id || c.user)?.toString() === userId.toString());
+    const currentUserRole = isOwner ? 'owner' : (userCollab?.role || 'viewer');
 
     let pendingInvites = [];
     if (isOwner) {
@@ -41,10 +44,14 @@ export const getCollaborators = async (req, res) => {
     }
 
     return res.json({
-      collaborators: space.collaborators || [],
+      collaborators: cleanCollaborators,
       pendingInvites,
       owner: space.owner,
       maxCollaborators: 10,
+      currentUserRole,
+      isOwner,
+      canManage: isOwner,
+      canEdit: isOwner || userCollab?.role === 'editor',
     });
   } catch (err) {
     console.error("getCollaborators error:", err);
@@ -170,6 +177,11 @@ export const removeCollaborator = async (req, res) => {
       return res.status(403).json({ error: "Unauthorized." });
     }
 
+    // Owner cannot be removed or leave via collaborator endpoint
+    if (space.owner.toString() === collaboratorUserId) {
+      return res.status(400).json({ error: "Space owner cannot be removed. Ownership transfer or Space deletion must be used." });
+    }
+
     space.collaborators = space.collaborators.filter(c => (c.user?._id || c.user)?.toString() !== collaboratorUserId);
     space.contributorsCount = Math.max(1, (space.collaborators.length || 0) + 1);
     await space.save();
@@ -180,7 +192,11 @@ export const removeCollaborator = async (req, res) => {
       { $set: { status: 'revoked' } }
     );
 
-    return res.json({ message: "Collaborator removed successfully.", collaborators: space.collaborators });
+    return res.json({
+      message: isSelfLeaving ? "You have left the Space." : "Collaborator removed successfully.",
+      collaborators: space.collaborators,
+      isSelfLeaving
+    });
   } catch (err) {
     console.error("removeCollaborator error:", err);
     return res.status(500).json({ error: "Failed to remove collaborator." });
@@ -224,5 +240,44 @@ export const updateCollaboratorRole = async (req, res) => {
   } catch (err) {
     console.error("updateCollaboratorRole error:", err);
     return res.status(500).json({ error: "Failed to update collaborator role." });
+  }
+};
+
+/**
+ * DELETE /api/spaces/:spaceId/collaborators/invites/:inviteId
+ * or DELETE /api/collaborators/:spaceId/invites/:inviteId
+ * Space owner cancels a pending collaboration invitation.
+ */
+export const cancelInvite = async (req, res) => {
+  try {
+    const spaceId = req.params.spaceId;
+    const inviteId = req.params.inviteId;
+    const userId = req.user._id;
+
+    const space = await Space.findById(spaceId);
+    if (!space) {
+      return res.status(404).json({ error: "Space not found." });
+    }
+
+    if (!can(req.user, 'manage_space', space)) {
+      return res.status(403).json({ error: "Only the Space owner can cancel invitations." });
+    }
+
+    const invite = await CollaborationInvite.findOne({ _id: inviteId, space: spaceId });
+    if (!invite) {
+      return res.status(404).json({ error: "Invitation not found." });
+    }
+
+    if (invite.status !== 'pending') {
+      return res.status(400).json({ error: `Invitation is already ${invite.status}.` });
+    }
+
+    invite.status = 'revoked';
+    await invite.save();
+
+    return res.json({ message: "Invitation cancelled successfully.", inviteId });
+  } catch (err) {
+    console.error("cancelInvite error:", err);
+    return res.status(500).json({ error: "Failed to cancel invitation." });
   }
 };

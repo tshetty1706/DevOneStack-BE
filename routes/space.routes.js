@@ -16,6 +16,7 @@ import {
   inviteCollaborator,
   removeCollaborator,
   updateCollaboratorRole,
+  cancelInvite,
 } from "../controllers/collaboration.controller.js";
 import protectRoute, { optionalProtectRoute } from "../middleware/protectRoute.js";
 import upload from "../config/multer.js";
@@ -34,6 +35,7 @@ router.post("/:spaceId/request-link/regenerate", protectRoute, regenerateRequest
 router.get("/:spaceId/collaborators", protectRoute, getCollaborators);
 router.post("/:spaceId/collaborators/invite", protectRoute, inviteCollaborator);
 router.patch("/:spaceId/collaborators/:userId", protectRoute, updateCollaboratorRole);
+router.delete("/:spaceId/collaborators/invites/:inviteId", protectRoute, cancelInvite);
 router.delete("/:spaceId/collaborators/:userId", protectRoute, removeCollaborator);
 
 router.get("/:id", optionalProtectRoute, getSpace);
